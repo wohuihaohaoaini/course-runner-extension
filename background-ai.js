@@ -257,6 +257,10 @@ chrome.storage.onChanged?.addListener((changes, area) => {
   }
 });
 
+const ANSWER_FORMAT = "只输出 JSON 对象，格式为 {\"answers\":[{\"id\":\"题目ID\",\"choices\":[\"A\"],\"blanks\":[\"第1空答案\"]}]}。单选和判断只能选一个 choices，多选可选多个 choices；填空题 type=fill 时按 blankCount 给出相同数量的纯文本 blanks，顺序与空位一致。不要输出解释或依据。";
+const ANSWER_SYSTEM = `你是课程章节练习答题助手。${ANSWER_FORMAT}仅使用给出的题干、选项、对应题号的截图和参考资料。必须为每道题返回对应的 id：实在无法判断的题目也要返回 id，并把 choices 写成空数组（填空题给出等量的空字符串），不要省略 id。不要补造选项或空位。`;
+const GUESS_SYSTEM = `你是课程章节练习答题助手。${ANSWER_FORMAT}这些题目上一轮未能确定答案。请结合题干、选项、对应题号的截图、参考资料和常识，为每道题给出最可能正确的答案：choices 不得为空，填空题每个空都要填写。必须为每道题返回对应的 id，不要补造选项或空位。`;
+
 function normalizeAnswers(raw, questions) {
   if (!raw || !Array.isArray(raw.answers)) throw new Error("DeepSeek 未返回答案列表");
   if (raw.answers.length !== questions.length || new Set(raw.answers.map(e => String(e.id))).size !== raw.answers.length) throw new Error("AI 答案数量不匹配或题号重复");
@@ -277,7 +281,7 @@ function normalizeAnswers(raw, questions) {
     }
     if (!Array.isArray(entry.choices)) throw new Error(`题目 ${question.id} 未返回答案，已停止填写以免错位`);
     const choices = [...new Set(entry.choices.map((choice) => String(choice).toUpperCase().trim()))];
-    if (!choices.length) throw new Error(`题目 ${question.id} 没有可用答案（模型无法判断），已停止填写`);
+    if (!choices.length) throw new Error(`题目 ${question.id} 没有可用答案（模型重问后仍无法判断），已停止填写`);
     const allowed = new Set(question.options.map((option) => option.id));
     if (!choices.length || choices.some((choice) => !allowed.has(choice))) {
       throw new Error(`题目 ${question.id} 的答案不在选项中`);
@@ -378,6 +382,29 @@ async function answerQuestions(questions, images = [], tabId, guard) {
   }
   // 保存过的旧模型名或拼错的名字不再原样发送，否则接口只会回 400，而提示会误指向密钥或余额。
   const resolvedModel = images.length ? VISION_MODEL : (ANSWER_MODELS.has(model) ? model : TEXT_MODEL);
+  const parsed = await requestAnswers({ apiKey, model: resolvedModel, questions, images, referenceText, customPrompt, system: ANSWER_SYSTEM, tabId, guard });
+  // 模型对个别题给出空答案时，只把这几道题再问一次并要求给出最可能的答案，避免整份测验停下转人工。
+  const unsure = Array.isArray(parsed?.answers)
+    ? questions.filter((question) => isEmptyAnswer(question, parsed.answers.find((entry) => String(entry?.id) === String(question.id))))
+    : [];
+  if (unsure.length) {
+    const unsureIds = new Set(unsure.map((question) => String(question.id)));
+    const retry = await requestAnswers({ apiKey, model: resolvedModel, questions: unsure,
+      images: images.filter((item) => unsureIds.has(String(item.id))), referenceText, customPrompt, system: GUESS_SYSTEM, tabId, guard });
+    const retried = new Map((Array.isArray(retry?.answers) ? retry.answers : [])
+      .filter((entry) => unsureIds.has(String(entry?.id))).map((entry) => [String(entry.id), entry]));
+    parsed.answers = parsed.answers.map((entry) => retried.get(String(entry?.id)) || entry);
+  }
+  return normalizeAnswers(parsed, questions);
+}
+
+function isEmptyAnswer(question, entry) {
+  if (!entry) return false;
+  if (question.type === "fill") return Array.isArray(entry.blanks) && entry.blanks.some((blank) => typeof blank !== "string" || !blank.trim());
+  return Array.isArray(entry.choices) && entry.choices.every((choice) => !String(choice ?? "").trim());
+}
+
+async function requestAnswers({ apiKey, model, questions, images, referenceText, customPrompt, system, tabId, guard }) {
   const prompt = {
     questions: questions.map(({ id, type, stem, options, blankCount }) => ({ id, type, stem, options, blankCount }))
   };
@@ -407,12 +434,12 @@ async function answerQuestions(questions, images = [], tabId, guard) {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: resolvedModel,
+        model,
         stream: true,
         stream_options: { include_usage: true },
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: "你是课程章节练习答题助手。只输出 JSON 对象，格式为 {\"answers\":[{\"id\":\"题目ID\",\"choices\":[\"A\"],\"blanks\":[\"第1空答案\"]}]}。单选和判断只能选一个 choices，多选可选多个 choices；填空题 type=fill 时按 blankCount 给出相同数量的纯文本 blanks，顺序与空位一致。不要输出解释或依据。仅使用给出的题干、选项、对应题号的截图和参考资料。必须为每道题返回对应的 id：实在无法判断的题目也要返回 id，并把 choices 写成空数组（填空题给出等量的空字符串），不要省略 id。不要补造选项或空位。" },
+          { role: "system", content: system },
           { role: "user", content: userContent }
         ]
       }),
@@ -432,13 +459,13 @@ async function answerQuestions(questions, images = [], tabId, guard) {
       if (error?.name === 'AbortError' || /^答题接口/.test(error?.message || '')) throw error;
       throw new Error(`答题接口返回了无法解析的内容（状态码 ${response.status}），请检查网络或代理`);
     }
-    recordApiUsage(data, "answer", tabId, resolvedModel);
+    recordApiUsage(data, "answer", tabId, model);
     const content = data.choices?.[0]?.message?.content;
     if (!content || data.choices?.[0]?.finish_reason === "length") throw new Error("DeepSeek 返回内容不完整");
     let parsed;
     try { parsed = JSON.parse(content); } catch { throw new Error("DeepSeek 返回的 JSON 无法解析"); }
     await validateAIContext(tabId, guard);
-    return normalizeAnswers(parsed, questions);
+    return parsed;
   } catch (error) {
     if (error?.name === "AbortError") throw new Error(request.cancelled ? "AI 操作已取消，旧结果已失效" : "答题接口等待超时，请稍后重试");
     if (error?.httpStatus) {

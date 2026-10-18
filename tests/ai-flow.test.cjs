@@ -207,15 +207,16 @@ test('video AI failure still defers the section without retrying',async()=>{
  const f=fixture('video');f.frame.readError='答题接口等待超时，请稍后重试';await f.tick();
  assert.equal(f.task().ai.retryAt,undefined);await f.tick();assert.equal(f.stored.todos.length,1);assert.equal(f.answers(),0);
 });
-test('chapter quiz retries are bounded, then wait for the user',async()=>{
+test('chapter quiz retries are bounded, then the quiz is skipped to the next job and not retried',async()=>{
  const f=fixture('quiz');f.frame.readError='答题接口等待超时，请稍后重试';
  for(let i=0;i<3;i++){await f.tick();assert.ok(f.task().ai.retryAt);f.task().ai.retryAt=Date.now()-1;}
- await f.tick();assert.equal(f.task().ai.retryAt,undefined);assert.match(f.task().status,/人工/);
- await f.tick();assert.equal(f.answers(),0);assert.equal(f.task().waitReason,'quiz');
+ await f.tick();assert.equal(f.task().ai,null);assert.match(f.task().status,/下一个任务点/);
+ assert.equal(f.task().currentJobId,null);assert.equal(f.task().waitReason,null);assert.equal(f.stored.todos.length,1);
+ const skipped=f.task().skippedJobs[0];await f.tick();await f.tick();assert.ok(f.task().skippedJobs.includes(skipped));assert.notEqual(f.task().currentJobId,skipped);
 });
 test('chapter quiz errors that retrying cannot fix are not retried',async()=>{
  const f=fixture('quiz');f.frame.readError='请先在扩展中填写答题接口密钥';await f.tick();
- assert.equal(f.task().ai.retryAt,undefined);assert.match(f.task().status,/人工/);
+ assert.equal(f.task().ai,null);assert.match(f.task().status,/下一个任务点/);assert.equal(f.stored.todos.length,1);
 });
 test('interrupted chapter quiz processing is retried automatically',async()=>{
  const f=fixture('quiz');Object.assign(f.task(),{phase:'waiting',waitReason:'quiz',ai:{kind:'quiz',stage:'processing',revision:'v1',at:Date.now()-90000}});
