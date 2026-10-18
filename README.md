@@ -8,7 +8,7 @@
 
 [下载最新版本](https://github.com/wohuihaohaoaini/course-runner-extension/releases/latest) · [反馈问题](https://github.com/wohuihaohaoaini/course-runner-extension/issues) · [版本更新记录](CHANGELOG.md)
 
-> 本教程对应 **1.0.1** 的界面与功能。下载时以 Releases 发布页的最新版本为准。支持桌面版 Chrome（内核 111 及以上）和基于 Chromium 的 Edge；建议使用浏览器当前稳定版。手机学习通 App、手机浏览器、Firefox 和 Safari 不适用本教程。
+> 本教程对应 **1.0.2** 的界面与功能。下载时以 Releases 发布页的最新版本为准。支持桌面版 Chrome（内核 111 及以上）和基于 Chromium 的 Edge；建议使用浏览器当前稳定版。手机学习通 App、手机浏览器、Firefox 和 Safari 不适用本教程。
 
 ## 目录
 
@@ -47,7 +47,7 @@
 ## 第一步：下载和解压
 
 1. 打开 [最新版本下载页](https://github.com/wohuihaohaoaini/course-runner-extension/releases/latest)。如果无法直接打开，进入仓库首页，找到 **Releases**（发布版本）再进入。
-2. 找到 **Assets**（附件；有时需要点击展开），下载名为 `course-runner-extension-版本号.zip` 的安装包，例如 `course-runner-extension-1.0.1.zip`。优先下载这个包，避免与页面自带的 `Source code (zip)` 源码包混淆。
+2. 找到 **Assets**（附件；有时需要点击展开），下载名为 `course-runner-extension-版本号.zip` 的安装包，例如 `course-runner-extension-1.0.2.zip`。优先下载这个包，避免与页面自带的 `Source code (zip)` 源码包混淆。
 3. 下载后**先解压**。Windows 通常可以右键 ZIP →“全部解压缩”；macOS 通常双击即可解压。
 4. 把解压后的文件夹放到固定位置，例如“文档 → 我的插件 → 课程流程助手”。安装后不要删除或移动这个文件夹。
 5. 打开文件夹，确认能直接看到 `manifest.json`。
@@ -167,7 +167,7 @@
 7. 第一次使用建议保持“**自动提交章节测验**”不勾选。插件填写后由你检查，再手动提交。视频弹题 AI 的提交不受这个章节测验开关控制。
 8. 关闭设置弹窗，回到悬浮窗点击“开始”。之前已报错的题目，可按下一节方法重新读取。
 
-文字识题模型可在下拉框选择；当前版本默认 Flash，图像题固定使用 Flash。这里描述的是插件 1.0.1 的配置，实际模型是否可用以接口响应为准。“课程资料”和“自定义提示词”均为可选项，分别需要点击对应的保存按钮。
+文字识题模型可在下拉框选择；当前版本默认 Flash，图像题固定使用 Flash。这里描述的是插件 1.0.2 的配置，实际模型是否可用以接口响应为准。“课程资料”和“自定义提示词”均为可选项，分别需要点击对应的保存按钮。
 
 **开关类设置选中后自动保存；密钥、课程资料、自定义提示词需要点击各自的“保存”按钮。**
 
@@ -316,7 +316,7 @@
 可以直接复制这个模板填写：
 
 ```text
-插件版本：例如 1.0.1
+插件版本：例如 1.0.2
 浏览器及版本：Chrome / Edge，具体版本号
 操作系统：Windows / macOS，具体版本
 发生位置：视频播放 / 视频弹题 / 章节测验 / 安装 / 其他
