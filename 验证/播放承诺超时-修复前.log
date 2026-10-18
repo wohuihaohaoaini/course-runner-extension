@@ -1,0 +1,15 @@
+✖ a browser play promise that never settles cannot block the runner indefinitely (4502.263083ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 0
+ℹ cancelled 1
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4835.729125
+
+✖ failing tests:
+
+test at course-runner-extension-0.2.7/tests/ai-dom.test.cjs:267:1
+✖ a browser play promise that never settles cannot block the runner indefinitely (4502.263083ms)
+  'test timed out after 4500ms'

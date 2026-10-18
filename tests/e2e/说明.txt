@@ -1,0 +1,18 @@
+0.2.6 浏览器验证
+
+加载扩展本身不需要安装依赖。开发验证：在扩展目录 npm install，然后执行：
+  npm test
+  npm run test:e2e
+  npm run test:panel
+
+需要 Chromium。默认使用 Playwright 已安装的 Chromium，也可以设置 CHROMIUM_PATH 指向可执行文件。
+run-ai.cjs 需要 ffmpeg（可通过 FFMPEG_PATH 指定）。
+E2E_OUTPUT 可指定截图和结果 JSON 输出目录。
+设置 E2E_VISION=1 会把一道模拟题改成截图识别路径，并通过 Chromium 调试协议模拟点击扩展工具栏按钮，取得 activeTab 授权。
+这项自动化需要支持 Extensions.triggerAction 的新版 Chromium；受浏览器运行方式影响，无授权时图像流程会停下提示，而不是绕过权限。
+
+run-ai.cjs：真实 Chromium 加载未修改的扩展；拦截模拟超星页和 DeepSeek 响应。
+覆盖连续三道视频弹题（含自定义多选、截图题及播放恢复核对）、多层 work 框架、重复的题型 data 值、新版 num_option 单选、判断、多选及 UEditor 填空、自动提交及确认、页内换节。
+panel.cjs：实际鼠标跨 iframe 拖动、滚轮滚动、状态更新保留 DOM 和滚动位置、AI 开关、悬浮球拖动。
+
+所有验证均不使用真实课程、真实 API 密钥或付费请求。

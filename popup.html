@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>课程流程助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><h1>课程流程助手</h1><span id="indicator" class="indicator">待启动</span></header>
+  <main>
+    <p id="status" class="status">打开超星课程目录或章节学习页后开始。学习页右下角也有悬浮面板。</p>
+    <div class="actions">
+      <button id="start" class="primary">开始</button>
+      <button id="pause" disabled>暂停</button>
+      <button id="mute" class="mute" aria-pressed="false" title="静音所有课程视频（快捷键 Alt+M）">🔊 静音</button>
+    </div>
+    <details id="todoBox">
+      <summary>待你处理 <span id="todoCount">0</span></summary>
+      <ul id="todos"></ul>
+      <button id="clearTodos" class="link">清空清单</button>
+    </details>
+    <details>
+      <summary>运行设置</summary>
+      <label for="jumpMode">做完一节后</label>
+      <select id="jumpMode">
+        <option value="unfinished">自动进入下一个未完成小节</option>
+        <option value="stop">停下，等我自己换节</option>
+      </select>
+      <label for="quizMode">AI 关闭时遇到章节测验</label>
+      <select id="quizMode">
+        <option value="skip">先跳过，记进“待你处理”</option>
+        <option value="wait">停下等我做完再继续</option>
+      </select>
+      <label for="videoAnswerMode">视频弹题处理</label>
+      <select id="videoAnswerMode">
+        <option value="ai">AI 作答（需开启 AI）</option>
+        <option value="trial">单选顺序试答 A → B → C → D（无需 AI）</option>
+        <option value="manual">手动作答</option>
+      </select>
+      <label class="check"><input id="collapseCourseSidebar" type="checkbox"> 收起右侧课程目录栏（记住选择）</label>
+      <p class="hint">视频无法播放、自动答题失败或选项用完时，记入待办并继续下一节。平台锁定的章节需要先完成前置任务。</p>
+      <label class="check"><input id="notify" type="checkbox" checked> 需要我处理时发桌面通知</label>
+      <p class="hint">课程标签页请保持在前台。验证码和人脸识别需要你处理，处理完后继续。</p>
+    </details>
+    <details id="aiSettings" open>
+      <summary>AI 识题</summary>
+      <label class="check"><input id="aiEnabled" type="checkbox"> 开启 AI 识题（总开关）</label>
+      <label class="check"><input id="aiVideoEnabled" type="checkbox" checked> 视频弹题 AI：识题、作答并继续播放（仅 AI 模式）</label>
+      <label class="check"><input id="aiQuizEnabled" type="checkbox" checked> 章节测验：AI 识题与填写</label>
+      <label class="check"><input id="autoSubmit" type="checkbox"> 自动提交章节测验</label>
+      <p class="hint" id="aiHint">AI 默认关闭。视频单选可在“运行设置”选择顺序试答，无需密钥。章节测验默认仅填写。</p>
+      <label for="apiKey">DeepSeek 接口密钥</label>
+      <div class="key-row"><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"><button id="saveKey">保存</button></div>
+      <button id="clearKey" class="link">删除本机密钥</button>
+      <label for="model">文字识题模型（图像题固定使用 Flash）</label>
+      <select id="model"><option value="deepseek-flash">DeepSeek Flash（默认）</option><option value="deepseek-v4-pro">DeepSeek Pro</option></select>
+      <label for="reference">课程资料（可选）</label>
+      <textarea id="reference" rows="3" maxlength="24000" placeholder="课程笔记或教材摘要"></textarea>
+      <button id="saveReference">保存资料</button>
+      <label for="customPrompt">自定义提示词（可选，最多 500 字）</label>
+      <textarea id="customPrompt" rows="2" maxlength="500" placeholder="例如：填空优先使用教材术语"></textarea>
+      <button id="savePrompt">保存提示词</button>
+      <p class="hint">开启后会将当前题目、必要的题目截图和相关课程资料发送给 DeepSeek，并使用你自己的接口额度。识图需要先点击一次工具栏扩展图标取得截图授权。</p>
+    </details>
+    <div class="diagnostics">
+      <button id="exportLogs" title="下载本机诊断日志 JSON 文件">导出日志</button>
+      <button id="clearLogs" title="清除本机保存的诊断日志">清除日志</button>
+    </div>
+    <p id="message" role="status"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

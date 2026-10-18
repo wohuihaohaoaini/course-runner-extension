@@ -1,0 +1,353 @@
+// AI 服务：接口请求、可取消操作、跨刷新提交记录。密钥与截图不会进入诊断日志。
+const API_URL = "https://api.deepseek.com/chat/completions";
+const ANSWER_MODELS = new Set(["deepseek-v4-pro", "deepseek-flash"]);
+const VISION_MODEL = "deepseek-flash";
+const TEXT_MODEL = "deepseek-flash";
+const activeAIRequests = new Set();
+let aiSettingsWrites = Promise.resolve();
+let aiLockWrites = Promise.resolve();
+const AI_OPTION_KEYS = ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit"];
+const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "aiRevision"];
+
+async function assertAIRequest(tabId, guard) {
+  if (!guard || !Number.isInteger(tabId) || !["quiz", "video"].includes(guard.kind)) throw new Error("AI 请求上下文已失效");
+  const stored = await chrome.storage.local.get([`task:${tabId}`, ...AI_OPTION_KEYS, "aiRevision", "videoAnswerMode"]);
+  if (stored.aiEnabled !== true || stored[guard.kind === "video" ? "aiVideoEnabled" : "aiQuizEnabled"] === false) throw new Error("AI 识题已关闭");
+  if (guard.kind === 'video' && stored.videoAnswerMode && stored.videoAnswerMode !== 'ai') throw new Error('视频答题模式已变化');
+  const task = stored[`task:${tabId}`];
+  if (!task || task.state !== "running" || !guard.runId || task.runId !== guard.runId ||
+      task.activeChapterId !== guard.chapterId || task.currentJobId !== guard.jobId ||
+      (stored.aiRevision || "initial") !== guard.revision) throw new Error("运行或 AI 设置已变化，旧结果已失效");
+}
+
+async function validateAIContext(tabId, guard) {
+  await assertAIRequest(tabId, guard);
+  const frames = await inspectFrames(tabId);
+  const frame = frames.find(f => f.frameId === guard.frameId);
+  const main = frames.find(f => f.frameId === 0);
+  if (!frame?.active || frame.aiDocument !== guard.frameToken ||
+      (main?.chapterId && main.chapterId !== guard.chapterId) || frames.some(f => f.captcha || f.face)) {
+    throw new Error("课程页面已变化或需要验证，旧结果已失效");
+  }
+}
+
+// 顺序试答有独立校验入口；它不能取得截图、AI 请求或章节测验提交权限。
+async function validateVideoTrialContext(tabId, guard) {
+  if (!Number.isInteger(tabId) || !guard || guard.kind !== 'video') throw new Error('试答上下文已失效');
+  const s = await chrome.storage.local.get([`task:${tabId}`, 'videoAnswerMode', 'aiRevision']);
+  const task = s[`task:${tabId}`];
+  if (s.videoAnswerMode !== 'trial' || (s.aiRevision || 'initial') !== guard.revision || !task || task.state !== 'running' ||
+      !guard.runId || task.runId !== guard.runId || task.activeChapterId !== guard.chapterId || task.currentJobId !== guard.jobId) {
+    throw new Error('运行或试答模式已变化');
+  }
+  const frames = await inspectFrames(tabId), frame = frames.find(f => f.frameId === guard.frameId), main = frames.find(f => f.frameId === 0);
+  if (!frame?.active || !frame.mediaPage || !frame.videoQuestionSurface || frame.aiDocument !== guard.frameToken ||
+      frame.jobId !== guard.jobId || (main?.chapterId && main.chapterId !== guard.chapterId) || frames.some(f => f.captcha || f.face) ||
+      (guard.fingerprint && frame.videoTrialFingerprint !== guard.fingerprint)) throw new Error('课程页面或题目已变化、无法匹配或需要验证');
+}
+
+function cancelAIRequests(tabId) {
+  for (const request of activeAIRequests) if (tabId === undefined || request.tabId === tabId) {
+    request.cancelled = true;
+    request.controller.abort();
+  }
+}
+
+async function setAISettings(patch) {
+  const allowed = {};
+  for (const key of AI_OPTION_KEYS) if (typeof patch?.[key] === "boolean") allowed[key] = patch[key];
+  for (const [key, limit] of [["apiKey", 500], ["referenceText", 24000], ["customPrompt", 500]]) {
+    if (typeof patch?.[key] === "string") allowed[key] = patch[key].trim().slice(0, limit);
+  }
+  if (['ai', 'trial', 'manual'].includes(patch?.videoAnswerMode)) allowed.videoAnswerMode = patch.videoAnswerMode;
+  if (ANSWER_MODELS.has(patch?.model)) allowed.model = patch.model;
+  cancelAIRequests();
+  const write = aiSettingsWrites.then(() => chrome.storage.local.set({ ...allowed, aiRevision: `${Date.now()}:${Math.random()}` }));
+  aiSettingsWrites = write.catch(() => {});
+  await write;
+  return { ok: true };
+}
+
+chrome.storage.onChanged?.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (AI_REVISION_KEYS.some(k => changes[k])) cancelAIRequests();
+  for (const request of activeAIRequests) {
+    const task = changes[`task:${request.tabId}`]?.newValue;
+    if (changes[`task:${request.tabId}`] && (!task || task.state !== "running" || task.runId !== request.guard.runId ||
+        task.activeChapterId !== request.guard.chapterId || task.currentJobId !== request.guard.jobId)) cancelAIRequests(request.tabId);
+  }
+});
+
+async function claimAISubmission(tabId, guard, key, confirmation = false) {
+  if (typeof key !== "string" || !key || key.length > 250) throw new Error("提交标识无效");
+  const write = aiLockWrites.then(async () => {
+    await validateAIContext(tabId, guard);
+    const { aiSubmissionLocks = {} } = await chrome.storage.local.get("aiSubmissionLocks");
+    const previous = aiSubmissionLocks[key];
+    if (confirmation ? (!previous || previous.confirmed) : Boolean(previous)) return { claimed: false, record: previous };
+    const next = { ...previous, at: previous?.at || Date.now(), confirmed: confirmation };
+    aiSubmissionLocks[key] = next;
+    // 已提交记录保留，不以过期或新一轮开始为理由自动重新提交。
+    await chrome.storage.local.set({ aiSubmissionLocks });
+    return { claimed: true, record: next };
+  });
+  aiLockWrites = write.catch(() => {});
+  return write;
+}
+
+async function captureTab(tab, guard) {
+  await validateAIContext(tab.id, guard);
+  const [active] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+  if (active?.id !== tab.id) throw new Error("课程标签页不在前台，无法截图");
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_PANEL", hidden: true }, { frameId: 0 });
+    await new Promise(resolve => setTimeout(resolve, 120));
+    const image = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    const [current] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    if (current?.id !== tab.id) throw new Error("截图时切换了标签页，已停止识别");
+    await validateAIContext(tab.id, guard);
+    return image;
+  } catch (error) {
+    if (/activeTab|not been invoked|permission|denied/i.test(error?.message || "")) {
+      throw new Error("需要截图授权：点击浏览器工具栏的扩展图标授权，再在悬浮窗点击“重新读取当前题目”。跨站跳转后可能需要重新授权");
+    }
+    throw error;
+  } finally {
+    await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_PANEL", hidden: false }, { frameId: 0 }).catch(() => {});
+  }
+}
+
+function normalizeAnswers(raw, questions) {
+  if (!raw || !Array.isArray(raw.answers)) throw new Error("DeepSeek 未返回答案列表");
+  if (raw.answers.length !== questions.length || new Set(raw.answers.map(e => String(e.id))).size !== raw.answers.length) throw new Error("AI 答案数量不匹配或题号重复");
+  const byId = new Map(raw.answers.map((entry) => [String(entry.id), entry]));
+  return questions.map((question) => {
+    const entry = byId.get(String(question.id));
+    if (!entry) throw new Error(`题目 ${question.id} 未返回答案，已停止填写以免错位`);
+    if (question.type === "fill") {
+      if (!Number.isInteger(question.blankCount) || question.blankCount < 1 || question.blankCount > 20 ||
+          !Array.isArray(entry.blanks) || entry.blanks.length !== question.blankCount) {
+        throw new Error(`题目 ${question.id} 的填空答案数量不匹配`);
+      }
+      const blanks = entry.blanks.map((blank) => typeof blank === "string" ? blank.trim() : "");
+      if (blanks.some((blank) => !blank || blank.length > 500)) {
+        throw new Error(`题目 ${question.id} 的填空答案为空或过长`);
+      }
+      return { id: question.id, blanks };
+    }
+    if (!Array.isArray(entry.choices)) throw new Error(`题目 ${question.id} 未返回答案，已停止填写以免错位`);
+    const choices = [...new Set(entry.choices.map((choice) => String(choice).toUpperCase().trim()))];
+    if (!choices.length) throw new Error(`题目 ${question.id} 没有可用答案（模型无法判断），已停止填写`);
+    const allowed = new Set(question.options.map((option) => option.id));
+    if (!choices.length || choices.some((choice) => !allowed.has(choice))) {
+      throw new Error(`题目 ${question.id} 的答案不在选项中`);
+    }
+    if (question.type !== "multiple" && choices.length !== 1) {
+      throw new Error(`题目 ${question.id} 应只有一个答案`);
+    }
+    return { id: question.id, choices };
+  });
+}
+
+function selectReference(referenceText, questions) {
+  const reference = String(referenceText || "").trim().slice(0, 24000);
+  if (reference.length <= 1500) return reference;
+  const query = questions.map((question) => [question.stem,
+    ...(question.options || []).map((option) => option.text)].join(" "))
+    .join(" ").replace(/\[[^\]]*见截图[^\]]*\]/g, "").toLowerCase();
+  const terms = new Set();
+  for (const word of query.match(/[\p{Script=Han}a-z0-9]+/gu) || []) {
+    for (let index = 0; index + 3 <= word.length; index++) terms.add(word.slice(index, index + 3));
+  }
+  if (!terms.size) return "";
+  const chunks = [];
+  let order = 0;
+  for (const line of reference.split(/\n+/).map((item) => item.trim()).filter(Boolean)) {
+    for (let offset = 0; offset < line.length; offset += 460) {
+      const text = line.slice(offset, offset + 500);
+      const lower = text.toLowerCase();
+      const score = [...terms].reduce((sum, term) => sum + (lower.includes(term) ? 1 : 0), 0);
+      if (score) chunks.push({ order, text, score });
+      order++;
+    }
+  }
+  return chunks.sort((a, b) => b.score - a.score || a.order - b.order)
+    .slice(0, 3).sort((a, b) => a.order - b.order)
+    .map((chunk) => chunk.text).join("\n");
+}
+
+function recordApiUsage(data, kind, tabId, model) {
+  const usage = data?.usage;
+  if (!usage || typeof usage !== "object") return;
+  const details = {
+    kind,
+    model: ANSWER_MODELS.has(model) ? model : undefined,
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens ??
+      (Number.isSafeInteger(usage.prompt_tokens) && Number.isSafeInteger(usage.completion_tokens) ?
+        usage.prompt_tokens + usage.completion_tokens : undefined)
+  };
+  if (![details.promptTokens, details.completionTokens, details.totalTokens]
+    .some((value) => Number.isSafeInteger(value) && value >= 0)) return;
+  appendDiagnostic("usage", details, tabId).catch(() => {});
+}
+
+async function readAIResponse(response) {
+  if (!response.headers?.get('content-type')?.includes('text/event-stream')) return response.json();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', content = '', finishReason, usage, done = false;
+  function line(value) {
+    if (!value.startsWith('data:')) return;
+    const text = value.slice(5).trim();
+    if (text === '[DONE]') { done = true; return; }
+    const chunk = JSON.parse(text);
+    if (chunk.error) throw new Error('答题接口返回错误，请稍后重试');
+    content += chunk.choices?.[0]?.delta?.content || '';
+    finishReason = chunk.choices?.[0]?.finish_reason || finishReason;
+    usage = chunk.usage || usage;
+    if (content.length > 1000000) throw new Error('答题接口返回内容过长');
+  }
+  try {
+    while (!done) {
+      const part = await reader.read();
+      buffer += decoder.decode(part.value, { stream: !part.done });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const value of lines) { line(value); if (done) break; }
+      if (buffer.length > 1000000) throw new Error('答题接口返回内容过长');
+      if (part.done) { if (buffer) line(buffer); break; }
+    }
+    if (!done || !finishReason) throw new Error('答题接口响应中断，请稍后重试');
+    return { choices: [{ message: { content }, finish_reason: finishReason }], usage };
+  } finally { await reader.cancel().catch(() => {}); }
+}
+
+async function answerQuestions(questions, images = [], tabId, guard) {
+  await validateAIContext(tabId, guard);
+  if (!Array.isArray(questions) || !questions.length || questions.length > 100 || new Set(questions.map(q => q.id)).size !== questions.length) throw new Error("题目数量或编号无效");
+  const { apiKey, model, referenceText, customPrompt } = await chrome.storage.local.get(["apiKey", "model", "referenceText", "customPrompt"]);
+  if (!apiKey) throw new Error("请先在扩展中填写答题接口密钥");
+  const imageIds = new Set(images.map((item) => String(item.id)));
+  if (images.length !== imageIds.size || questions.some((question) => question.needsImage !== imageIds.has(String(question.id)))) {
+    throw new Error("加密题截图不完整，停止答题");
+  }
+  if (images.some((item) => !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(item.image || ""))) {
+    throw new Error("题目截图格式无效，停止答题");
+  }
+  // 保存过的旧模型名或拼错的名字不再原样发送，否则接口只会回 400，而提示会误指向密钥或余额。
+  const resolvedModel = images.length ? VISION_MODEL : (ANSWER_MODELS.has(model) ? model : TEXT_MODEL);
+  const prompt = {
+    questions: questions.map(({ id, type, stem, options, blankCount }) => ({ id, type, stem, options, blankCount }))
+  };
+  const reference = selectReference(referenceText, questions);
+  if (reference) prompt.reference = reference;
+  const instruction = String(customPrompt || "").trim().slice(0, 500);
+  if (instruction) prompt.instruction = instruction;
+  const userContent = images.length ? [
+    { type: "text", text: `请根据下列题目截图和题号作答。题干或选项标注“见截图”时，以截图为准。\n${JSON.stringify(prompt)}` },
+    ...images.flatMap(({ id, image }) => [
+      { type: "text", text: `题目 ID ${id} 的完整截图` },
+      { type: "image_url", image_url: { url: image, detail: "original" } }
+    ])
+  ] : JSON.stringify(prompt);
+  const controller = new AbortController();
+  // 流式响应尽早返回响应头；25 秒仍未收到响应头则主动结束，避免超出 Chrome 的 fetch 等待限制。
+  const headerTimeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  const request = { controller, tabId, guard };
+  activeAIRequests.add(request);
+  // 仅在请求期间维持工作线程，并持续核对运行状态；结束时立即清理。
+  const heartbeat = setInterval(() => {
+    assertAIRequest(tabId, guard).catch(() => { request.cancelled = true; controller.abort(); });
+  }, 15000);
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: resolvedModel,
+        stream: true,
+        stream_options: { include_usage: true },
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "你是课程章节练习答题助手。只输出 JSON 对象，格式为 {\"answers\":[{\"id\":\"题目ID\",\"choices\":[\"A\"],\"blanks\":[\"第1空答案\"]}]}。单选和判断只能选一个 choices，多选可选多个 choices；填空题 type=fill 时按 blankCount 给出相同数量的纯文本 blanks，顺序与空位一致。不要输出解释或依据。仅使用给出的题干、选项、对应题号的截图和参考资料。必须为每道题返回对应的 id：实在无法判断的题目也要返回 id，并把 choices 写成空数组（填空题给出等量的空字符串），不要省略 id。不要补造选项或空位。" },
+          { role: "user", content: userContent }
+        ]
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(headerTimeout);
+    if (!response.ok) {
+      const detail = "";
+      const failure = new Error(`答题接口请求失败，状态码 ${response.status}${detail}，请检查密钥、余额、模型名称或网络`);
+      failure.httpStatus = response.status;
+      throw failure;
+    }
+    let data;
+    try {
+      data = await readAIResponse(response);
+    } catch (error) {
+      if (error?.name === 'AbortError' || /^答题接口/.test(error?.message || '')) throw error;
+      throw new Error(`答题接口返回了无法解析的内容（状态码 ${response.status}），请检查网络或代理`);
+    }
+    recordApiUsage(data, "answer", tabId, resolvedModel);
+    const content = data.choices?.[0]?.message?.content;
+    if (!content || data.choices?.[0]?.finish_reason === "length") throw new Error("DeepSeek 返回内容不完整");
+    let parsed;
+    try { parsed = JSON.parse(content); } catch { throw new Error("DeepSeek 返回的 JSON 无法解析"); }
+    await validateAIContext(tabId, guard);
+    return normalizeAnswers(parsed, questions);
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(request.cancelled ? "AI 操作已取消，旧结果已失效" : "答题接口等待超时，请稍后重试");
+    if (error?.httpStatus) {
+      appendDiagnostic("error", { source: "background", message: error.message, httpStatus: error.httpStatus }, tabId).catch(() => {});
+      throw error;
+    }
+    if (/^答题接口/.test(error?.message || "")) throw error;
+    if (/[㐀-鿿]/.test(error?.message || "")) throw error;
+    throw new Error("答题接口连接失败，请检查网络后重试");
+  } finally {
+    // 超时定时器必须覆盖读取响应正文的阶段，否则服务端返回响应头后卡住就再也不会超时。
+    clearTimeout(timeout);
+    clearTimeout(headerTimeout);
+    clearInterval(heartbeat);
+    activeAIRequests.delete(request);
+  }
+}
+
+
+async function runBlankEditorAction(sender, questionId, blanks, mode, guard, expected) {
+  await validateAIContext(sender.tab?.id, guard);
+  if (sender.frameId !== guard.frameId || !sender.documentId || typeof expected !== "string" || !expected) throw new Error("填空框架已变化");
+  if (!sender.tab?.id || !Number.isInteger(sender.frameId) ||
+      !Array.isArray(blanks) || blanks.length > 20 ||
+      blanks.some((blank) => typeof blank !== "string" || !blank.trim() || blank.length > 500)) {
+    throw new Error("填空请求无效，停止填写");
+  }
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: sender.tab.id, documentIds: [sender.documentId] },
+    world: "MAIN",
+    func: blankEditorAction,
+    args: [String(questionId), blanks, mode, expected]
+  });
+  if (results.length !== 1 || !results[0].result) throw new Error("填空编辑器未返回核对结果");
+  return results[0].result;
+}
+
+
+async function handleAIMessage(message, sender) {
+  const tabId = sender.tab?.id;
+  if (message.type === "SET_AI_SETTINGS") return setAISettings(message.patch);
+  if (message.type === "CANCEL_AI") { cancelAIRequests(tabId); return { ok: true }; }
+  if (message.type === "VIDEO_TRIAL_VALIDATE") { await validateVideoTrialContext(tabId, message.guard); return { ok: true }; }
+  if (message.type === "AI_VALIDATE") { await validateAIContext(tabId, message.guard); return { ok: true }; }
+  if (message.type === "AI_CLAIM_SUBMISSION") return claimAISubmission(tabId, message.guard, message.key, message.confirmation === true);
+  if (message.type === "ANSWER") return answerQuestions(message.questions, message.images, tabId, message.guard);
+  if (message.type === "CAPTURE_TAB") return captureTab(sender.tab, message.guard);
+  if (message.type === "FILL_BLANKS" || message.type === "VERIFY_BLANKS") {
+    return runBlankEditorAction(sender, message.questionId, message.blanks, message.type === "FILL_BLANKS" ? "fill" : "verify", message.guard, message.expected);
+  }
+  throw new Error("未知 AI 消息类型");
+}

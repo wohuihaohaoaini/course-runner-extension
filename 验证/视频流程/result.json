@@ -1,0 +1,71 @@
+[
+  {
+    "scenario": "trial",
+    "status": "passed",
+    "events": [
+      {
+        "type": "submit",
+        "choice": "A"
+      },
+      {
+        "type": "submit",
+        "choice": "B"
+      },
+      {
+        "type": "continue"
+      }
+    ],
+    "apiCalls": 0,
+    "todos": 0,
+    "chapter": "7",
+    "nativeSidebarFolded": true,
+    "errors": []
+  },
+  {
+    "scenario": "exhausted",
+    "status": "passed",
+    "events": [
+      {
+        "type": "submit",
+        "choice": "A"
+      },
+      {
+        "type": "submit",
+        "choice": "B"
+      },
+      {
+        "type": "submit",
+        "choice": "C"
+      },
+      {
+        "type": "submit",
+        "choice": "D"
+      }
+    ],
+    "apiCalls": 0,
+    "todos": 1,
+    "chapter": "8",
+    "nativeSidebarFolded": true,
+    "errors": []
+  },
+  {
+    "scenario": "ai-error",
+    "status": "passed",
+    "events": [],
+    "apiCalls": 1,
+    "todos": 1,
+    "chapter": "8",
+    "nativeSidebarFolded": true,
+    "errors": []
+  },
+  {
+    "scenario": "stall",
+    "status": "passed",
+    "events": [],
+    "apiCalls": 0,
+    "todos": 1,
+    "chapter": "8",
+    "nativeSidebarFolded": true,
+    "errors": []
+  }
+]

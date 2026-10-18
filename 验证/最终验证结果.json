@@ -1,0 +1,106 @@
+{
+  "version": "0.2.7",
+  "unit": {
+    "passed": 151,
+    "failed": 0,
+    "skipped": 0
+  },
+  "videoScenarios": [
+    {
+      "scenario": "trial",
+      "status": "passed",
+      "events": [
+        {
+          "type": "submit",
+          "choice": "A"
+        },
+        {
+          "type": "submit",
+          "choice": "B"
+        },
+        {
+          "type": "continue"
+        }
+      ],
+      "apiCalls": 0,
+      "todos": 0,
+      "chapter": "7",
+      "nativeSidebarFolded": true,
+      "errors": []
+    },
+    {
+      "scenario": "exhausted",
+      "status": "passed",
+      "events": [
+        {
+          "type": "submit",
+          "choice": "A"
+        },
+        {
+          "type": "submit",
+          "choice": "B"
+        },
+        {
+          "type": "submit",
+          "choice": "C"
+        },
+        {
+          "type": "submit",
+          "choice": "D"
+        }
+      ],
+      "apiCalls": 0,
+      "todos": 1,
+      "chapter": "8",
+      "nativeSidebarFolded": true,
+      "errors": []
+    },
+    {
+      "scenario": "ai-error",
+      "status": "passed",
+      "events": [],
+      "apiCalls": 1,
+      "todos": 1,
+      "chapter": "8",
+      "nativeSidebarFolded": true,
+      "errors": []
+    },
+    {
+      "scenario": "stall",
+      "status": "passed",
+      "events": [],
+      "apiCalls": 0,
+      "todos": 1,
+      "chapter": "8",
+      "nativeSidebarFolded": true,
+      "errors": []
+    }
+  ],
+  "aiRegression": {
+    "status": "passed",
+    "videoQuestions": 3,
+    "chapterQuestions": 6,
+    "topConfirmation": true,
+    "vision": true
+  },
+  "panel": {
+    "status": "passed",
+    "panelHeight": 276.296875,
+    "appearance": "classic-blue",
+    "dragAcrossIframe": true,
+    "stableHeader": true,
+    "scrollerPreserved": true,
+    "scrollTop": 500,
+    "aiToggle": true,
+    "miniDrag": true,
+    "trialSettingWithoutAI": true,
+    "nativeSidebarPreference": true
+  },
+  "package": {
+    "file": "course-runner-extension-0.2.7.zip",
+    "files": 28,
+    "bytes": 92709,
+    "sha256": "78b0a71aab44f45d3365a812ccb2b07e8a800b8ec29836224bbd596480587bae"
+  },
+  "realCourseRetest": "pending"
+}

@@ -1,0 +1,30 @@
+running/page 开始第 1 个任务点：视频「v1」
+running/page 正在开始播放视频「v1」
+running/page 正在播放视频「v1」 0:03 / 0:05
+running/page 开始第 2 个任务点：视频「v2」
+running/page 正在开始播放视频「v2」
+running/page 正在填写并核对视频弹题
+running/waiting 视频弹题已点击提交，等待平台作答反馈
+running/waiting 平台已返回作答结果，正在点击继续学习
+running/page 正在填写并核对视频弹题
+running/waiting 视频弹题已点击提交，等待平台作答反馈
+running/waiting 平台已返回作答结果，正在点击继续学习
+running/page 正在填写并核对视频弹题
+running/waiting 视频弹题已点击提交，等待平台作答反馈
+running/waiting 平台已返回作答结果，正在点击继续学习
+running/waiting 视频弹题已关闭，正在核对播放是否恢复
+running/waiting 视频弹题已关闭，正在恢复播放并等待进度增长
+running/page 视频弹题已结束，视频已播完，继续核对任务点
+running/page 开始第 3 个任务点：章节测验「q」
+running/page 已识别 6 道章节测验，正在读取题目
+running/page 正在填写并核对章节测验
+running/waiting 章节测验已提交，等待平台确认
+running/waiting 已确认提交，等待平台完成标记
+running/page 章节测验已完成，继续
+running/switchingChapter 正在进入下一个未完成小节「第二节」
+running/page 已进入小节，正在读取任务点
+running/page 开始第 1 个任务点：视频「v3」
+running/page 正在开始播放视频「v3」
+running/page 正在播放视频「v3」 0:03 / 0:05
+completed/page 左侧目录里所有未完成小节都处理过了
+PASS {"status":"passed","vision":true,"finished":["v1","v2","q","v3"],"events":[{"type":"video-submit","id":"v2","question":"1"},{"type":"video-continue","id":"v2","question":"1"},{"type":"video-resumed","id":"v2","question":"1"},{"type":"video-submit","id":"v2","question":"2"},{"type":"video-continue","id":"v2","question":"2"},{"type":"video-resumed","id":"v2","question":"2"},{"type":"video-submit","id":"v2","question":"3"},{"type":"video-continue","id":"v2","question":"3"},{"type":"video-resumed","id":"v2","question":"3"},{"type":"quiz-submit"},{"type":"quiz-confirm"}],"requests":[{"model":"deepseek-flash","image":false,"questionIds":["video-3394679b1b59de43"],"stems":["二加三等于多少？"],"types":["single"],"imageCount":0},{"model":"deepseek-flash","image":false,"questionIds":["video-ce4f961f9e1cc297"],"stems":["1 【多选题】示例题干 909"],"types":["multiple"],"imageCount":0},{"model":"deepseek-flash","image":true,"questionIds":["video-beb1b2e918e12085"],"stems":["[题干见截图]"],"types":["single"],"imageCount":1},{"model":"deepseek-flash","image":true,"questionIds":["101","102","103","104","105","fill1"],"stems":[],"types":["single","single","judgment","judgment","multiple","fill"],"imageCount":5}],"errors":[]} outputs: course-runner-extension-0.2.7/验证/AI回归

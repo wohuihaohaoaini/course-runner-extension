@@ -1,0 +1,19 @@
+{
+  "name": "course-runner-extension-validation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "仅用于扩展开发验证；加载扩展不需要 npm 安装",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "test:e2e": "node tests/e2e/run-ai.cjs",
+    "test:panel": "node tests/e2e/panel.cjs",
+    "test:video": "node tests/e2e/video-flow.cjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.3",
+    "playwright": "1.62.1"
+  }
+}

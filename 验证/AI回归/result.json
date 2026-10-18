@@ -1,0 +1,130 @@
+{
+  "status": "passed",
+  "vision": true,
+  "finished": [
+    "v1",
+    "v2",
+    "q",
+    "v3"
+  ],
+  "events": [
+    {
+      "type": "video-submit",
+      "id": "v2",
+      "question": "1"
+    },
+    {
+      "type": "video-continue",
+      "id": "v2",
+      "question": "1"
+    },
+    {
+      "type": "video-resumed",
+      "id": "v2",
+      "question": "1"
+    },
+    {
+      "type": "video-submit",
+      "id": "v2",
+      "question": "2"
+    },
+    {
+      "type": "video-continue",
+      "id": "v2",
+      "question": "2"
+    },
+    {
+      "type": "video-resumed",
+      "id": "v2",
+      "question": "2"
+    },
+    {
+      "type": "video-submit",
+      "id": "v2",
+      "question": "3"
+    },
+    {
+      "type": "video-continue",
+      "id": "v2",
+      "question": "3"
+    },
+    {
+      "type": "video-resumed",
+      "id": "v2",
+      "question": "3"
+    },
+    {
+      "type": "quiz-submit"
+    },
+    {
+      "type": "quiz-confirm"
+    }
+  ],
+  "requests": [
+    {
+      "model": "deepseek-flash",
+      "image": false,
+      "questionIds": [
+        "video-3394679b1b59de43"
+      ],
+      "stems": [
+        "二加三等于多少？"
+      ],
+      "types": [
+        "single"
+      ],
+      "imageCount": 0
+    },
+    {
+      "model": "deepseek-flash",
+      "image": false,
+      "questionIds": [
+        "video-ce4f961f9e1cc297"
+      ],
+      "stems": [
+        "1 【多选题】示例题干 909"
+      ],
+      "types": [
+        "multiple"
+      ],
+      "imageCount": 0
+    },
+    {
+      "model": "deepseek-flash",
+      "image": true,
+      "questionIds": [
+        "video-beb1b2e918e12085"
+      ],
+      "stems": [
+        "[题干见截图]"
+      ],
+      "types": [
+        "single"
+      ],
+      "imageCount": 1
+    },
+    {
+      "model": "deepseek-flash",
+      "image": true,
+      "questionIds": [
+        "101",
+        "102",
+        "103",
+        "104",
+        "105",
+        "fill1"
+      ],
+      "stems": [],
+      "types": [
+        "single",
+        "single",
+        "judgment",
+        "judgment",
+        "multiple",
+        "fill"
+      ],
+      "imageCount": 5
+    }
+  ],
+  "errors": []
+}
