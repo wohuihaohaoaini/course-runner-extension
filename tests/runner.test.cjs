@@ -138,14 +138,43 @@ test('face recognition and captcha pause the run until they are gone', async () 
   assert.deepEqual(notices(r.sent), ['face', 'captcha']);
 });
 
-test('video that keeps pausing is deferred so later sections can play', async () => {
-  const r = runner([main(), cards([job('a', 'video')]), player(3, 'a', { paused: true, ready: true, time: 50, duration: 600 })],
-    { currentJobId: 'a', playRetries: 3 });
+test('paused samples with advancing time reset retries instead of skipping unfinished video', async () => {
+  const info = { paused: true, ready: true, time: 414, duration: 938 };
+  const r = runner(() => [main(), cards([job('a', 'video')]), player(3, 'a', info)],
+    { currentJobId: 'a', playRetries: 3, lastVideoTime: 410 });
+  for (let i = 0; i < 5; i++) {
+    await r.tick();
+    assert.equal(r.task().phase, 'page');
+    assert.equal(r.task().lastVideoTime, info.time);
+    assert.equal(r.task().playRetries, 1);
+    info.time += 3;
+  }
+  assert.deepEqual(commands(r.sent), Array(5).fill('PLAY'));
+  assert.equal(r.stored.todos, undefined);
+});
+
+test('repeated pauses without progress wait in the same section, even after 30 seconds', async () => {
+  const info = { paused: true, ready: true, time: 414, duration: 938 };
+  const r = runner(() => [main(), cards([job('a', 'video')]), player(3, 'a', info)],
+    { currentJobId: 'a', lastVideoTime: 414 });
+  for (let i = 0; i < 4; i++) await r.tick();
+  assert.equal(r.task().phase, 'waiting');
+  assert.equal(r.task().waitReason, 'paused');
+  r.stored['task:1'].waitingSince = Date.now() - 60000;
   await r.tick();
-  assert.equal(r.task().phase, 'switchingChapter');
-  assert.equal(r.task().targetChapterId, '8');
-  assert.equal(r.stored.todos.length, 1);
-  assert.equal(r.task().state, 'running');
+  assert.equal(r.task().phase, 'waiting');
+  assert.equal(r.task().activeChapterId, '7');
+  assert.deepEqual(commands(r.sent), ['PLAY', 'PLAY', 'PLAY']);
+  assert.deepEqual(notices(r.sent), ['paused']);
+  assert.equal(r.stored.todos, undefined);
+  info.paused = false;
+  await r.tick();
+  assert.equal(r.task().phase, 'waiting', 'playing flag alone does not prove progress');
+  info.time = 417;
+  await r.tick();
+  assert.equal(r.task().phase, 'page');
+  assert.equal(r.task().playRetries, 0);
+  assert.equal(r.task().lastVideoTime, 417);
 });
 
 test('chapter quiz is skipped into the to-do list by default and never answered', async () => {

@@ -304,7 +304,7 @@ const WAIT_STATUS = {
   face: "需要人脸识别：请用手机扫码完成识别，完成后插件自动继续",
   videoQuestion: "视频中出现答题：请在视频里自己选择答案并提交，插件会在弹题关闭后自动继续播放",
   quiz: "本节有章节测验：请你自己完成并提交，平台确认完成后插件自动继续",
-  paused: "视频被暂停且无法自动恢复，可能出现了提示框；请在页面上处理，处理完插件会自动继续"
+  paused: "视频多次暂停且未恢复进度，已留在当前小节；请保持课程页在前台并手动播放，检测到进度后自动继续"
 };
 
 function attentionReason(ctx) {
@@ -447,14 +447,19 @@ async function handleMedia(tabId, task, ctx, job) {
     }
     return saveTask(tabId, { videoEndedAt: endedAt, status: `${label}已播完，等待平台确认任务点` });
   }
+  // 轮询时恰好暂停不代表两轮之间没有播放，先记录真实进度并重置失败次数。
+  const progressed = info.time > (task.lastVideoTime || 0) + 1;
+  if (progressed) {
+    task = await saveTask(tabId, { lastVideoTime: info.time, lastProgressAt: Date.now(), playRetries: 0 });
+  }
   if (info.paused) {
-    if ((task.playRetries || 0) >= 3) return job.type === "video" ? deferVideoChapter(tabId, task, ctx, job, "连续尝试播放后仍然暂停") : enterWaiting(tabId, task, "paused", { lastVideoTime: info.time });
+    if ((task.playRetries || 0) >= 3) return enterWaiting(tabId, task, "paused", { lastVideoTime: info.time });
     await frameCommand(frame.frameId, "PLAY").catch(() => {});
     return saveTask(tabId, { playRetries: (task.playRetries || 0) + 1,
       status: info.time < 1 ? `正在开始播放${label}` : `${label}暂停了，已尝试继续播放` });
   }
-  if (info.time > (task.lastVideoTime || 0) + 1) {
-    return saveTask(tabId, { lastVideoTime: info.time, lastProgressAt: Date.now(), playRetries: 0,
+  if (progressed) {
+    return saveTask(tabId, {
       status: `正在播放${label} ${clock(info.time)} / ${clock(info.duration)}` });
   }
   if (Date.now() - Math.max(task.lastProgressAt || 0, since, task.initialPlayAttemptedAt || 0) > 45000) {
@@ -626,9 +631,7 @@ const CHAPTER_PHASES = {
     }
     // 视频被未知原因暂停：视频重新走起来、或任务点已完成时继续。
     if (!job || job.finished) return leaveWaiting(tabId, "任务点已完成，继续", { mediaTime });
-    if (task.waitReason === 'paused' && job.type === 'video' && Date.now() - (task.waitingSince || task.jobStartedAt || 0) > 30000) {
-      return deferVideoChapter(tabId, task, ctx, job, '视频等待恢复播放超时');
-    }
+    // 未知原因暂停需要人工确认；不能因等待超时再跳过尚未完成的视频。
     const info = media?.video;
     if (info && !info.paused && info.time > (task.lastVideoTime || 0) + 1) {
       return leaveWaiting(tabId, "视频已恢复播放，继续运行", { mediaTime: info.time });
