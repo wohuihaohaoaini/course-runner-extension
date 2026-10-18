@@ -17,7 +17,8 @@
     "notifications",
     "activeTab",
     "scripting",
-    "alarms"
+    "alarms",
+    "debugger"
   ],
   "host_permissions": [
     "https://*.chaoxing.com/*",
@@ -67,8 +68,5 @@
       },
       "description": "一键静音 / 取消静音课程视频"
     }
-  },
-  "optional_permissions": [
-    "debugger"
-  ]
+  }
 }

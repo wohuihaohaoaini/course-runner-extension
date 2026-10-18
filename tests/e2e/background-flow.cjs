@@ -19,13 +19,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 execFileSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=c=0x087b71:s=320x180:r=10:d=5', '-c:v', 'libvpx', '-an', path.join(temp, 'clip.webm')], { stdio: 'ignore' });
 const site = require('./course-site.cjs')({ clip: fs.readFileSync(path.join(temp, 'clip.webm')), vision: VISION, mutedVideo: false });
 
-// 测试用扩展副本：可选的调试权限改为安装权限，免去授权对话框；其余文件与源码一致。
+// 测试用扩展副本：只复制扩展运行需要的文件，内容与源码一致。
 const source = path.resolve(__dirname, '../..');
 const extension = path.join(temp, 'extension');
 fs.cpSync(source, extension, { recursive: true, filter: file => !/^(node_modules|\.git|tests|dist|docs|验证)(\/|$)/.test(path.relative(source, file)) });
-const manifest = JSON.parse(fs.readFileSync(path.join(extension, 'manifest.json'), 'utf8'));
-manifest.permissions.push('debugger');
-fs.writeFileSync(path.join(extension, 'manifest.json'), JSON.stringify(manifest, null, 2));
 
 execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=mooc1.chaoxing.com',
   '-keyout', path.join(temp, 'key.pem'), '-out', path.join(temp, 'cert.pem')], { stdio: 'ignore' });

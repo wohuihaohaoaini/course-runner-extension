@@ -115,7 +115,6 @@ async function renderBackgroundSettings() {
 
 async function disableBackgroundCapture() {
   await saveAISettings({ allowBackgroundCapture: false });
-  await chrome.permissions.remove({ permissions: ["debugger"] }).catch(() => {});
   $("allowBackgroundCapture").checked = false;
 }
 
@@ -123,16 +122,15 @@ $("allowBackgroundCapture").addEventListener("change", async () => {
   const requested = $("allowBackgroundCapture").checked;
   try {
     if (requested) {
-      // 权限请求必须直接来自用户点击。弹窗若在授权对话框出现时关闭，后台服务会按权限变化同步设置。
-      const granted = await chrome.permissions.request({ permissions: ["debugger"] });
-      if (!granted) throw new Error("未授予后台截图权限：文字题仍可后台处理，图片题请回到课程页或把课程页单独放在一个窗口里");
+      // Chrome 不允许把“调试程序”列为可选权限，它随安装授予；功能是否使用仍只由这个开关决定。
+      if (!(await hasDebuggerPermission())) throw new Error("浏览器未提供调试程序权限：文字题仍可后台处理，图片题请回到课程页或把课程页单独放在一个窗口里");
       await chrome.storage.local.set({ allowBackgroundPlayback: true });
       await saveAISettings({ allowBackgroundCapture: true });
       $("allowBackgroundPlayback").checked = true;
       $("message").textContent = "后台截图答题已开启；图片题仍需开启 AI 并保存你自己的密钥";
     } else {
       await disableBackgroundCapture();
-      $("message").textContent = "后台截图答题已关闭，调试权限已撤销";
+      $("message").textContent = "后台截图答题已关闭，不会再连接课程标签页";
     }
   } catch (error) {
     await renderBackgroundSettings().catch(() => {});
