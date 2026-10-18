@@ -35,6 +35,7 @@ function captureStageFailure(message, step) {
   return step === 'capture' && document.hidden === true && !/已失效|已变化|已关闭|已取消|需要验证/.test(message);
 }
 const AI_RETRY_DELAYS = [5000, 15000, 30000];
+const AI_STALE_ERROR = /已关闭|已取消|已失效|已变化|需要验证/;
 const AI_FATAL_ERROR = /填写答题接口密钥|截图授权|状态码 40[0-4]|暂不支持|已关闭|已取消|模式已变化|设置已变化/;
 
 const AIFlow = (() => {
@@ -86,7 +87,20 @@ const AIFlow = (() => {
       return waitForUser(tabId, task, 'quiz', `章节测验识别失败：${message}；${delay / 1000} 秒后自动重新识别（第 ${attempts}/${AI_RETRY_DELAYS.length} 次）`,
         { ...ai, retryAt: Date.now() + delay }, { aiAttempts: attempts });
     }
-    return waitForUser(tabId, task, 'quiz', `章节测验需要人工处理：${message}`, ai);
+    // 运行或设置已变化的失败仍按原样等待；其余无法自动完成的测验记入待办，自动转到下一个任务点。
+    if (AI_STALE_ERROR.test(message)) return waitForUser(tabId, task, 'quiz', `章节测验需要人工处理：${message}`, ai);
+    return skipFailedQuiz(tabId, task, message);
+  }
+  async function skipFailedQuiz(tabId, task, message) {
+    const latest = (await chrome.storage.local.get(`task:${tabId}`))[`task:${tabId}`];
+    if (latest?.runId !== task.runId || latest?.state !== 'running' || latest.activeChapterId !== task.activeChapterId ||
+        !task.currentJobId || latest.currentJobId !== task.currentJobId) return;
+    const job = { id: task.currentJobId, type: 'quiz', name: '' };
+    await addTodo({ id: latest.activeChapterId, name: latest.chapterName || '' }, job, `章节测验未能自动完成：${message}`);
+    await saveTask(tabId, { ...jobReset(), phase: 'page', waitReason: null, currentJobId: null,
+      skippedJobs: [...new Set([...(latest.skippedJobs || []), job.id])],
+      aiSkippedJobs: [...new Set([...(latest.aiSkippedJobs || []), job.id])],
+      status: `章节测验未能自动完成（${message}），已记入待办，先做下一个任务点` });
   }
   function quizFrame(ctx, job) {
     const frames = ctx.frames.filter(f => f.active && f.quizPageVisible && f.questionCount > 0);

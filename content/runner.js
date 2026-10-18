@@ -104,7 +104,7 @@ function jobReset() {
 
 function chapterReset(id, tabs = []) {
   return {
-    ...jobReset(), phase: "page", activeChapterId: id, currentJobId: null, skippedJobs: [],
+    ...jobReset(), phase: "page", activeChapterId: id, currentJobId: null, skippedJobs: [], aiSkippedJobs: [],
     visitedTabs: tabs.filter((tab) => tab.active).map((tab) => tab.index),
     tabOpenedAt: Date.now(), chapterEnteredAt: Date.now(), waitReason: null, notifiedKey: null,
     targetChapterId: null, switchStartedAt: null
@@ -714,7 +714,9 @@ async function tick(tabId, task) {
   // 之前 AI 关闭时跳过的测验，在 AI 打开后应该重新尝试，而不是一直留在“已跳过”。
   if (aiQuiz && task.skippedJobs?.length) {
     const quizIds = new Set(ctx.jobs.filter((job) => job.type === "quiz").map((job) => job.id));
-    const kept = task.skippedJobs.filter((id) => !quizIds.has(id));
+    // AI 已经试过但没能完成、被自动跳过的测验不再拉回来，否则会反复重试同一份测验。
+    const aiSkipped = task.aiSkippedJobs || [];
+    const kept = task.skippedJobs.filter((id) => !quizIds.has(id) || aiSkipped.includes(id));
     if (kept.length !== task.skippedJobs.length) {
       // 测验标签之前已经看过，重新打开它才能让 AI 重新识题。
       const quizTabIndexes = new Set((ctx.main?.tabs || []).filter((tab) => tab.kind === "quiz").map((tab) => tab.index));
