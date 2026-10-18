@@ -118,3 +118,18 @@ test('trial validation rejects changed document, question and captcha',async()=>
  const invalid=await f.send({type:'VIDEO_TRIAL_VALIDATE',guard:g});assert.match(invalid.error,/变化|验证|匹配/);
  }
 });
+test('an empty answer is re-asked once for that question only, asking for the most likely choice',async()=>{
+  const two=[...questions,{ id:'q2', type:'single', needsImage:false, stem:'二加二等于几？', options:[{id:'A',text:'四'},{id:'B',text:'五'}] }];
+  const bodies=[]; const reply=answers=>({ok:true,status:200,json:async()=>({choices:[{message:{content:JSON.stringify({answers})},finish_reason:'stop'}]})});
+  const f=fixture({},async(u,o)=>{const body=JSON.parse(o.body);bodies.push(body);
+    return bodies.length===1?reply([{id:'q1',choices:['A']},{id:'q2',choices:[]}]):reply([{id:'q2',choices:['A']}]);});
+  const r=await f.send({type:'ANSWER',questions:two,images:[],guard});
+  assert.deepEqual(r.map(a=>a.choices[0]),['A','A']); assert.equal(bodies.length,2);
+  assert.deepEqual(JSON.parse(bodies[1].messages[1].content).questions.map(q=>q.id),['q2']);
+  assert.match(bodies[1].messages[0].content,/最可能/);
+});
+test('a question still empty after the re-ask stops filling as before',async()=>{
+  let calls=0; const f=fixture({},async()=>{calls++;return {ok:true,status:200,json:async()=>({choices:[{message:{content:'{"answers":[{"id":"q1","choices":[]}]}'},finish_reason:'stop'}]})};});
+  const r=await f.send({type:'ANSWER',questions,images:[],guard});
+  assert.match(r.error,/重问后仍无法判断/); assert.equal(calls,2);
+});
