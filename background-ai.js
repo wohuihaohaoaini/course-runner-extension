@@ -7,7 +7,7 @@ const activeAIRequests = new Set();
 let aiSettingsWrites = Promise.resolve();
 let aiLockWrites = Promise.resolve();
 const AI_OPTION_KEYS = ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit"];
-const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "aiRevision"];
+const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "allowBackgroundCapture", "aiRevision"];
 
 async function assertAIRequest(tabId, guard) {
   if (!guard || !Number.isInteger(tabId) || !["quiz", "video"].includes(guard.kind)) throw new Error("AI 请求上下文已失效");
@@ -55,7 +55,7 @@ function cancelAIRequests(tabId) {
 
 async function setAISettings(patch) {
   const allowed = {};
-  for (const key of AI_OPTION_KEYS) if (typeof patch?.[key] === "boolean") allowed[key] = patch[key];
+  for (const key of [...AI_OPTION_KEYS, "allowBackgroundCapture"]) if (typeof patch?.[key] === "boolean") allowed[key] = patch[key];
   for (const [key, limit] of [["apiKey", 500], ["referenceText", 24000], ["customPrompt", 500]]) {
     if (typeof patch?.[key] === "string") allowed[key] = patch[key].trim().slice(0, limit);
   }
@@ -95,27 +95,167 @@ async function claimAISubmission(tabId, guard, key, confirmation = false) {
   return write;
 }
 
-async function captureTab(tab, guard) {
+// 截图有两条路径：
+// 1. 课程页是所在窗口当前选中的标签页且窗口未最小化：用 captureVisibleTab，不要求窗口获得焦点，
+//    因此把课程页单独放在一个窗口里也能截图。
+// 2. 课程页被切到后台、窗口最小化或被遮挡：仅在用户开启“后台截图答题”并授予可选调试权限后，
+//    通过调试接口对这个标签页单独截图，不激活标签页、不抢焦点。
+const CAPTURE_FOREGROUND_MESSAGE = "课程标签页不在前台，无法截图：请回到课程页，或把课程页单独放在一个未最小化的窗口里，或开启“后台截图答题”";
+const CAPTURE_SESSION_MS = 20000;
+const CAPTURE_COMMAND_MS = 10000;
+const captureSessions = new Map();
+
+async function backgroundCaptureAllowed() {
+  const settings = await chrome.storage.local.get(["allowBackgroundPlayback", "allowBackgroundCapture"]);
+  if (settings.allowBackgroundPlayback !== true || settings.allowBackgroundCapture !== true || !chrome.debugger) return false;
+  try { return await chrome.permissions.contains({ permissions: ["debugger"] }); } catch { return false; }
+}
+
+// 只看浏览器能确认的状态：标签页在窗口中被选中且窗口没有最小化。页面自报隐藏（窗口被完全遮挡）时
+// 截到的可能是旧画面，不走普通截图。
+async function visibleCapturePossible(tab, pageHidden) {
+  const current = await chrome.tabs.get(tab.id);
+  if (!current.active || pageHidden === true) return false;
+  const browserWindow = chrome.windows?.get ? await chrome.windows.get(current.windowId).catch(() => null) : null;
+  return browserWindow?.state !== "minimized";
+}
+
+async function captureMode(tab, pageHidden) {
+  if (await visibleCapturePossible(tab, pageHidden)) return "visible";
+  if (await backgroundCaptureAllowed()) return "debugger";
+  throw new Error(CAPTURE_FOREGROUND_MESSAGE);
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
+async function releaseCaptureSession(tabId) {
+  const session = captureSessions.get(tabId);
+  if (!session) return;
+  captureSessions.delete(tabId);
+  clearTimeout(session.timer);
+  if (session.attached) await chrome.debugger.detach({ tabId }).catch(() => {});
+}
+
+function releaseAllCaptureSessions() {
+  return Promise.all([...captureSessions.keys()].map(releaseCaptureSession));
+}
+
+// 连接调试接口会让浏览器显示调试提示条并改变页面可视高度，所以先连接、再由页面测量题目位置。
+// 同一标签页只保留一个连接；到期、出错、停止任务或关闭标签页时立即释放。
+async function openCaptureSession(tab, guard) {
+  const existing = captureSessions.get(tab.id);
+  if (existing) {
+    if (existing.runId !== guard.runId) throw new Error("后台截图暂不可用：此课程页已有截图请求，请稍后重试");
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => releaseCaptureSession(tab.id), CAPTURE_SESSION_MS);
+    await existing.ready;
+    return existing;
+  }
+  const session = { runId: guard.runId, attached: false, busy: false, timer: null, ready: null };
+  captureSessions.set(tab.id, session);
+  session.timer = setTimeout(() => releaseCaptureSession(tab.id), CAPTURE_SESSION_MS);
+  session.ready = (async () => {
+    try {
+      const current = await chrome.tabs.get(tab.id);
+      if (!/^https:\/\/[^/]+\.chaoxing\.com\//.test(current.url || "")) throw new Error("课程页面已变化");
+      await withTimeout(chrome.debugger.attach({ tabId: tab.id }, "1.3"), CAPTURE_COMMAND_MS, "调试连接超时");
+      session.attached = true;
+      // 后台标签页第一次截图时浏览器会重新绘制并可能调整页面尺寸（调试提示条也会改变可视高度）。
+      // 先截一张丢弃，等页面稳定后再由页面测量题目位置，避免正式截图时布局变化。
+      await withTimeout(chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false }),
+        CAPTURE_COMMAND_MS, "浏览器未在限定时间内返回后台截图");
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } catch (error) {
+      await releaseCaptureSession(tab.id);
+      throw new Error(`后台截图暂不可用：${/Another debugger|already attached/i.test(error?.message || "") ?
+        "课程页已打开开发者工具或其他调试连接，请关闭后重新读取" : "请检查“后台截图答题”授权，或回到课程页重新读取"}；当前题目会保留`);
+    }
+  })();
+  await session.ready;
+  return session;
+}
+
+async function prepareCapture(tab, guard, pageHidden) {
   await validateAIContext(tab.id, guard);
-  const [active] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
-  if (active?.id !== tab.id) throw new Error("课程标签页不在前台，无法截图");
+  const mode = await captureMode(tab, pageHidden);
+  if (mode === "debugger") await openCaptureSession(tab, guard);
+  return { mode };
+}
+
+async function captureWithDebugger(tab, guard) {
+  const session = await openCaptureSession(tab, guard);
+  if (session.busy) throw new Error("后台截图暂不可用：此课程页已有截图请求，请稍后重试");
+  session.busy = true;
+  try {
+    await validateAIContext(tab.id, guard);
+    const result = await withTimeout(chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureScreenshot", {
+      format: "png", fromSurface: true, captureBeyondViewport: false
+    }), CAPTURE_COMMAND_MS, "浏览器未在限定时间内返回后台截图");
+    if (!await backgroundCaptureAllowed()) throw new Error("后台截图设置已关闭");
+    if (typeof result?.data !== "string" || !result.data) throw new Error("浏览器未返回图像");
+    return `data:image/png;base64,${result.data}`;
+  } catch (error) {
+    await releaseCaptureSession(tab.id);
+    if (/^后台截图暂不可用/.test(error?.message || "")) throw error;
+    throw new Error(`后台截图暂不可用：${error?.message === "后台截图设置已关闭" ? "后台截图设置已关闭" :
+      "请检查调试权限、关闭课程页开发者工具，或回到课程页重新读取"}；当前题目会保留`);
+  } finally { session.busy = false; }
+}
+
+async function captureTab(tab, guard, pageHidden) {
+  await validateAIContext(tab.id, guard);
+  let mode = await captureMode(tab, pageHidden);
   try {
     await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_PANEL", hidden: true }, { frameId: 0 });
     await new Promise(resolve => setTimeout(resolve, 120));
-    const image = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-    const [current] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
-    if (current?.id !== tab.id) throw new Error("截图时切换了标签页，已停止识别");
+    let image;
+    if (mode === "visible") {
+      try {
+        image = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+        // 截图期间课程页被切走时，截到的是别的网页，必须丢弃。
+        if (!await visibleCapturePossible(tab, false)) throw new Error("截图时切换了标签页，已停止识别");
+      } catch (error) {
+        // 缺少工具栏授权时，已开启后台截图的用户可直接改用调试接口截图。
+        if (!/activeTab|not been invoked|permission|denied/i.test(error?.message || "") || !await backgroundCaptureAllowed()) throw error;
+        mode = "debugger";
+      }
+    }
+    if (mode === "debugger") image = await captureWithDebugger(tab, guard);
     await validateAIContext(tab.id, guard);
     return image;
   } catch (error) {
     if (/activeTab|not been invoked|permission|denied/i.test(error?.message || "")) {
-      throw new Error("需要截图授权：点击浏览器工具栏的扩展图标授权，再在悬浮窗点击“重新读取当前题目”。跨站跳转后可能需要重新授权");
+      throw new Error("需要截图授权：点击浏览器工具栏的扩展图标授权，再在悬浮窗点击“重新读取当前题目”。跨站跳转后可能需要重新授权；也可以开启“后台截图答题”");
     }
     throw error;
   } finally {
     await chrome.tabs.sendMessage(tab.id, { type: "CAPTURE_PANEL", hidden: false }, { frameId: 0 }).catch(() => {});
   }
 }
+
+chrome.debugger?.onDetach?.addListener((source) => {
+  const session = captureSessions.get(source.tabId);
+  if (!session) return;
+  captureSessions.delete(source.tabId);
+  clearTimeout(session.timer);
+});
+chrome.tabs?.onRemoved?.addListener((tabId) => { releaseCaptureSession(tabId).catch(() => {}); });
+chrome.storage.onChanged?.addListener((changes, area) => {
+  if (area !== "local") return;
+  if ((changes.allowBackgroundCapture && changes.allowBackgroundCapture.newValue !== true) ||
+      (changes.allowBackgroundPlayback && changes.allowBackgroundPlayback.newValue !== true)) releaseAllCaptureSessions().catch(() => {});
+  for (const [key, change] of Object.entries(changes)) {
+    if (!key.startsWith("task:")) continue;
+    const tabId = Number(key.slice(5));
+    if (captureSessions.has(tabId) && (change.newValue?.state !== "running" || change.newValue?.runId !== captureSessions.get(tabId).runId)) {
+      releaseCaptureSession(tabId).catch(() => {});
+    }
+  }
+});
 
 function normalizeAnswers(raw, questions) {
   if (!raw || !Array.isArray(raw.answers)) throw new Error("DeepSeek 未返回答案列表");
@@ -345,7 +485,9 @@ async function handleAIMessage(message, sender) {
   if (message.type === "AI_VALIDATE") { await validateAIContext(tabId, message.guard); return { ok: true }; }
   if (message.type === "AI_CLAIM_SUBMISSION") return claimAISubmission(tabId, message.guard, message.key, message.confirmation === true);
   if (message.type === "ANSWER") return answerQuestions(message.questions, message.images, tabId, message.guard);
-  if (message.type === "CAPTURE_TAB") return captureTab(sender.tab, message.guard);
+  if (message.type === "CAPTURE_PREPARE") return prepareCapture(sender.tab, message.guard, message.pageHidden === true);
+  if (message.type === "CAPTURE_TAB") return captureTab(sender.tab, message.guard, message.pageHidden === true);
+  if (message.type === "CAPTURE_RELEASE") { await releaseCaptureSession(tabId); return { ok: true }; }
   if (message.type === "FILL_BLANKS" || message.type === "VERIFY_BLANKS") {
     return runBlankEditorAction(sender, message.questionId, message.blanks, message.type === "FILL_BLANKS" ? "fill" : "verify", message.guard, message.expected);
   }

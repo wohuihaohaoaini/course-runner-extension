@@ -16,7 +16,8 @@ function fixture(extra = {}, responder) {
     chrome:{ runtime:{getManifest:()=>({version:'0.2.1'}),onMessage:{addListener:f=>onMessage=f}},
       storage:{local:{get:async(keys)=>{ const list=typeof keys==='string'?[keys]:keys||Object.keys(stored); return Object.fromEntries(list.map(k=>[k,stored[k]])); },set:async(patch)=>{ const changes={}; for(const [k,v] of Object.entries(patch)){ changes[k]={oldValue:stored[k],newValue:v}; stored[k]=v; } listeners.forEach(f=>f(changes,'local')); },remove:async k=>delete stored[k]},onChanged:{addListener:f=>listeners.push(f)}},
       webNavigation:{getAllFrames:async()=>[{frameId:0},{frameId:2}]},
-      tabs:{sendMessage:async(id,m,o)=>{sent.push(m);return o.frameId===0?{kind:'other',chapterId:'7'}:{kind:'quiz',active:true,aiDocument:'doc1',jobId:'q'};}}
+      tabs:{sendMessage:async(id,m,o)=>{sent.push(m);return o.frameId===0?{kind:'other',chapterId:'7'}:{kind:'quiz',active:true,aiDocument:'doc1',jobId:'q'};},
+        get:async id=>({id,active:true,windowId:1,url:'https://mooc1.chaoxing.com/mycourse/studentstudy'})}
     }});
   context.importScripts=(...files)=>files.forEach(f=>vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),context,{filename:f}));
   vm.runInContext(fs.readFileSync(path.join(root,'background.js'),'utf8'),context);

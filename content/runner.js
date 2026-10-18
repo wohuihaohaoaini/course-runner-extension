@@ -9,6 +9,7 @@
 //   returningDirectory：读不到左侧目录时，退回课程目录页找下一节（0.1.x 的做法，作为兜底）。
 
 let loopActive = false;
+let cycleActive = false;
 let lastDiagnosticSnapshotAt = 0;
 const LOG_LIMIT = 40;
 const TODO_LIMIT = 100;
@@ -94,7 +95,7 @@ async function pruneTodos(ctx) {
 // ---- 计时字段 ----
 function jobReset() {
   return {
-    ai: null, aiAttempts: 0, videoTrial: null, waitingSince: null, jobStartedAt: Date.now(), lastVideoTime: 0, lastProgressAt: null, videoEndedAt: null, playRetries: 0,
+    ai: null, aiAttempts: 0, captureRetries: 0, videoTrial: null, waitingSince: null, jobStartedAt: Date.now(), lastVideoTime: 0, lastProgressAt: null, videoEndedAt: null, playRetries: 0,
     initialPlayAttemptedAt: null, initialPlayWaitingAt: null, jobRevealedAt: null, mediaReloadedAt: null,
     documentAtBottomAt: null, questionContinueClickedAt: null, questionClosedAt: null,
     questionResumeTime: null, questionResumePlayAt: null, questionResultAt: null
@@ -304,6 +305,7 @@ const WAIT_STATUS = {
   face: "需要人脸识别：请用手机扫码完成识别，完成后插件自动继续",
   videoQuestion: "视频中出现答题：请在视频里自己选择答案并提交，插件会在弹题关闭后自动继续播放",
   quiz: "本节有章节测验：请你自己完成并提交，平台确认完成后插件自动继续",
+  background: "后台播放未能继续（浏览器或平台可能暂停了后台视频），当前小节已保留；回到课程页后自动重新检查，检测到进度也会自动继续",
   paused: "视频多次暂停且未恢复进度，已留在当前小节；请保持课程页在前台并手动播放，检测到进度后自动继续"
 };
 
@@ -409,6 +411,7 @@ async function handleMedia(tabId, task, ctx, job) {
       return saveTask(tabId, { jobRevealedAt: Date.now(), status: `${label}在下方，已滚动到播放器位置` });
     }
     if (Date.now() - since < 20000) return saveTask(tabId, { status: `正在等待${label}的播放器加载` });
+    if (ctx.backgroundPlayback) return enterWaiting(tabId, task, "background");
     return skipJob(tabId, task, ctx, job, "播放器一直没有加载出来", `${label}的播放器一直没加载出来，已记入待办，先做后面的`);
   }
   if (frame.mediaError) {
@@ -435,6 +438,7 @@ async function handleMedia(tabId, task, ctx, job) {
       return saveTask(tabId, { playRetries: 1, initialPlayWaitingAt: waitingSince, status: `正在启动${label}并等待加载` });
     }
     if (Date.now() - waitingSince > 25000) {
+      if (ctx.backgroundPlayback) return enterWaiting(tabId, task, "background", { lastVideoTime: info?.time || 0 });
       return job.type === "video" ? deferVideoChapter(tabId, task, ctx, job, "播放器等待超时，仍未开始播放") :
         skipJob(tabId, task, ctx, job, "音频加载超时", "音频加载超时，先处理后面的任务点");
     }
@@ -453,7 +457,7 @@ async function handleMedia(tabId, task, ctx, job) {
     task = await saveTask(tabId, { lastVideoTime: info.time, lastProgressAt: Date.now(), playRetries: 0 });
   }
   if (info.paused) {
-    if ((task.playRetries || 0) >= 3) return enterWaiting(tabId, task, "paused", { lastVideoTime: info.time });
+    if ((task.playRetries || 0) >= 3) return enterWaiting(tabId, task, ctx.backgroundPlayback ? "background" : "paused", { lastVideoTime: info.time });
     await frameCommand(frame.frameId, "PLAY").catch(() => {});
     return saveTask(tabId, { playRetries: (task.playRetries || 0) + 1,
       status: info.time < 1 ? `正在开始播放${label}` : `${label}暂停了，已尝试继续播放` });
@@ -463,6 +467,7 @@ async function handleMedia(tabId, task, ctx, job) {
       status: `正在播放${label} ${clock(info.time)} / ${clock(info.duration)}` });
   }
   if (Date.now() - Math.max(task.lastProgressAt || 0, since, task.initialPlayAttemptedAt || 0) > 45000) {
+    if (ctx.backgroundPlayback) return enterWaiting(tabId, task, "background", { lastVideoTime: info.time });
     return job.type === "video" ? deferVideoChapter(tabId, task, ctx, job, "视频长时间没有播放进度") : enterWaiting(tabId, task, "paused", { lastVideoTime: info.time });
   }
 }
@@ -612,6 +617,8 @@ const CHAPTER_PHASES = {
         return;
       }
       if (Date.now() - task.questionClosedAt > 15000 && job?.type === 'video') {
+        // 后台时平台可能因页面不可见暂停视频，不能据此跳过本节。
+        if (ctx.backgroundPlayback) return enterWaiting(tabId, task, 'background', { lastVideoTime: mediaTime });
         return deferVideoChapter(tabId, task, ctx, job, '弹题结束后视频未能恢复播放');
       }
       return saveTask(tabId, { status: Date.now() - task.questionClosedAt > 15000 ?
@@ -626,6 +633,20 @@ const CHAPTER_PHASES = {
       // 继续留在等待阶段；否则会回到 page、再次识题并重复填写。
       if (ctx.treeTask?.kind === "complete" && !(ctx.aiQuiz && task.ai?.kind === "quiz")) {
         return leaveWaiting(tabId, "章节测验已完成，继续", { mediaTime });
+      }
+      return;
+    }
+    if (task.waitReason === "background") {
+      if (!document.hidden) return leaveWaiting(tabId, "已返回课程页，重新检查播放状态", { mediaTime });
+      if (!job || job.finished) return leaveWaiting(tabId, "任务点已完成，继续", { mediaTime });
+      const info = media?.video;
+      if (info && !info.paused && info.time > (task.lastVideoTime || 0) + 1) {
+        return leaveWaiting(tabId, "后台播放已恢复，继续运行", { mediaTime: info.time });
+      }
+      // 每分钟最多尝试一次正常播放；不伪造页面可见性，平台仍暂停时保持等待。
+      if (media && info?.paused && Date.now() - (task.backgroundPlayAt || task.waitingSince || 0) > 60000) {
+        await saveTask(tabId, { backgroundPlayAt: Date.now() });
+        await frameCommand(media.frameId, "PLAY").catch(() => {});
       }
       return;
     }
@@ -678,6 +699,18 @@ async function tick(tabId, task) {
   await CourseLayout.apply();
   const aiQuiz = await AIFlow.enabled("quiz");
   const ctx = summarizeFrames(await inspect(), task, aiQuiz);
+  const { allowBackgroundPlayback } = await chrome.storage.local.get("allowBackgroundPlayback");
+  ctx.backgroundPlayback = allowBackgroundPlayback === true && document.hidden === true;
+  if (Boolean(task.backgroundWasHidden) !== ctx.backgroundPlayback) {
+    // 从后台回到前台：后台计时器节流期间累积的等待时间不能算作播放器故障，重新计时。
+    const now = Date.now();
+    const reset = task.backgroundWasHidden ? { jobStartedAt: now, lastProgressAt: now, playRetries: 0,
+      initialPlayWaitingAt: task.initialPlayWaitingAt ? now : null, videoEndedAt: task.videoEndedAt ? now : null,
+      documentAtBottomAt: task.documentAtBottomAt ? now : null, questionClosedAt: task.questionClosedAt ? now : null,
+      questionContinueClickedAt: task.questionContinueClickedAt ? now : null, questionResultAt: task.questionResultAt ? now : null,
+      waitingSince: task.waitingSince ? now : null } : {};
+    task = await saveTask(tabId, { ...reset, backgroundWasHidden: ctx.backgroundPlayback });
+  }
   // 之前 AI 关闭时跳过的测验，在 AI 打开后应该重新尝试，而不是一直留在“已跳过”。
   if (aiQuiz && task.skippedJobs?.length) {
     const quizIds = new Set(ctx.jobs.filter((job) => job.type === "quiz").map((job) => job.id));
@@ -722,26 +755,34 @@ async function tick(tabId, task) {
   return enterChapter(tabId, task, ctx.main?.chapterId || chapterId(), ctx.main?.tabs, "已升级到新版本，从当前小节重新开始");
 }
 
+// 页面定时器与后台唤醒共用互斥检查，避免 AI、提交或换节执行两遍。
+async function runCycle(tabId) {
+  if (cycleActive) return;
+  cycleActive = true;
+  try {
+    const key = `task:${tabId}`;
+    const task = (await chrome.storage.local.get(key))[key];
+    if (!task || task.state !== "running") return;
+    try { await tick(tabId, task); }
+    catch (error) {
+      const latest = (await chrome.storage.local.get(key))[key];
+      if (latest?.state !== "running" || latest.runId !== task.runId) return;
+      recordDiagnostic("error", { source: "content", phase: task.phase, message: error.message || String(error) });
+      await saveTask(tabId, { state: "error", status: displayError(error) });
+      notifyUser("error", displayError(error));
+    }
+  } finally { cycleActive = false; }
+}
+
 async function startLoop(tabId) {
   if (loopActive) return;
   loopActive = true;
   try {
     while (true) {
-      const key = `task:${tabId}`;
-      const task = (await chrome.storage.local.get(key))[key];
+      const task = (await chrome.storage.local.get(`task:${tabId}`))[`task:${tabId}`];
       if (!task || task.state !== "running") break;
-      try { await tick(tabId, task); }
-      catch (error) {
-        const latest = (await chrome.storage.local.get(key))[key];
-        if (latest?.state === "paused") break;
-        recordDiagnostic("error", { source: "content", phase: task.phase, message: error.message || String(error) });
-        await saveTask(tabId, { state: "error", status: displayError(error) });
-        notifyUser("error", displayError(error));
-        break;
-      }
+      await runCycle(tabId);
       await wait(3000);
     }
-  } finally {
-    loopActive = false;
-  }
+  } finally { loopActive = false; }
 }

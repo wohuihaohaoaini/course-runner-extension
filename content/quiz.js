@@ -185,7 +185,10 @@ async function captureStableViewport(root, guard, box) {
   const signature = value => JSON.stringify(value);
   const expected = signature(box);
   let changed = false, stopped = false, raf;
-  const markChanged = () => { changed = true; };
+  // 后台页面不绘制画面，滚动事件会延迟到截图强制绘制时才派发，不能据此判断布局变化；
+  // 此时只比较截图前后题目的实际位置。
+  const eventsReliable = document.hidden !== true;
+  const markChanged = () => { if (eventsReliable) changed = true; };
   const windows = [];
   for (let current = window;; current = current.parent) {
     windows.push(current);
@@ -201,7 +204,7 @@ async function captureStableViewport(root, guard, box) {
   check();
   try {
     await assertAICommand(guard);
-    const shot = await chrome.runtime.sendMessage({ type: 'CAPTURE_TAB', guard });
+    const shot = await chrome.runtime.sendMessage({ type: 'CAPTURE_TAB', guard, pageHidden: document.hidden === true });
     if (shot?.error) throw new Error(shot.error);
     await assertAICommand(guard);
     if (changed || !root.isConnected || signature(topViewportRect(root)) !== expected) throw new Error('截图期间页面发生滚动或布局变化，请保持页面稳定后重新开始');
@@ -272,18 +275,26 @@ async function captureVideoQuestion(guard) {
   return captureElement(root, videoAIEnvelope().questions[0].id, 60, guard, () => verifyVideoCaptureLayout(root));
 }
 
+// 后台标签页的计时器至少 1 秒才触发一次，稳定判断改按采样次数并放宽总时长。
 async function captureElement(root, id, minHeight = 60, guard, verifyLayout) {
+  const prepared = await chrome.runtime.sendMessage({ type: 'CAPTURE_PREPARE', guard, pageHidden: document.hidden === true });
+  if (prepared?.error) throw new Error(prepared.error);
+  // 同一轮识题的多张截图共用一个调试连接，由识题流程在全部截图结束后释放（到期也会自动释放）。
+  return captureMeasuredElement(root, id, minHeight, guard, verifyLayout);
+}
+
+async function captureMeasuredElement(root, id, minHeight, guard, verifyLayout) {
   scrollTargetThroughFrames(root);
   let box;
   let previous;
   let stable = 0;
   let boundsError;
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + (document.hidden ? 12000 : 3000);
   while (Date.now() < deadline) {
     await wait(150);
     try { box = topViewportRect(root); boundsError = null; }
     catch (error) { boundsError = error; continue; }
-    const signature = [box.x, box.y, box.width, box.height].map((value) => Math.round(value)).join(":");
+    const signature = [box.x, box.y, box.width, box.height, box.viewportWidth, box.viewportHeight].map((value) => Math.round(value)).join(":");
     stable = signature === previous ? stable + 1 : 0;
     previous = signature;
     if (stable >= 2) break;

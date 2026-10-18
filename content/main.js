@@ -131,6 +131,17 @@ async function handleStartOrPause(type) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // 后台唤醒：立即应答，避免后台服务等待整轮识题；与页面定时器共用互斥，同一时刻只执行一轮。
+  if (message.type === "RUNNER_PULSE" && window === top && isStartablePage()) {
+    sendResponse({ ok: true });
+    chrome.runtime.sendMessage({ type: "TAB_ID" }).then(async tabId => {
+      const { allowBackgroundPlayback } = await chrome.storage.local.get("allowBackgroundPlayback");
+      if (allowBackgroundPlayback !== true || !tabId) return;
+      if (!loopActive) startLoop(tabId);
+      else await runCycle(tabId);
+    }).catch(() => {});
+    return;
+  }
   if (message.type === "CAPTURE_PANEL" && window === top) {
     Panel.captureHidden(message.hidden === true);
     sendResponse({ ok: true });

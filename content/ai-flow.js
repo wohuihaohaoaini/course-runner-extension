@@ -25,6 +25,15 @@ async function assertAICommand(guard) {
 
 // 章节测验识别失败（测验未加载、网络、超时、解析、截图或核对失败）在提交前自动重试；
 // 密钥、授权、结构不支持等无法靠重试解决的直接转人工。视频弹题保持失败即记待办换节。
+// 截图不可用时留在当前题，不记为失败、不换节；回到课程页、修复授权或稍后自动重试后再读题。
+const AI_FOREGROUND_ERROR = /课程标签页不在前台|截图时切换了标签页|后台截图暂不可用/;
+const AI_CAPTURE_RETRY_MS = 60000;
+const AI_CAPTURE_RETRIES = 2;
+function captureStageFailure(message, step) {
+  if (AI_FOREGROUND_ERROR.test(message)) return true;
+  // 后台截图期间布局未稳定、超时等可恢复问题同样保留当前题；上下文变化仍按失效处理。
+  return step === 'capture' && document.hidden === true && !/已失效|已变化|已关闭|已取消|需要验证/.test(message);
+}
 const AI_RETRY_DELAYS = [5000, 15000, 30000];
 const AI_FATAL_ERROR = /填写答题接口密钥|截图授权|状态码 40[0-4]|暂不支持|已关闭|已取消|模式已变化|设置已变化/;
 
@@ -87,6 +96,7 @@ const AIFlow = (() => {
     const options = await aiOptions();
     const guard = guardFor(task, frame, kind, options);
     const label = kind === 'video' ? '视频弹题' : '章节测验';
+    let step = 'read';
     try {
       await check(tabId, guard);
       const read = await frameCommand(frame.frameId, kind === 'video' ? 'READ_VIDEO_QUESTION' : 'READ_QUIZ', { guard });
@@ -100,10 +110,19 @@ const AIFlow = (() => {
       }
       await state(tabId, guard, { ai: { kind, stage: 'processing', revision: guard.revision, at: Date.now() }, status: `已识别 ${read.questions.length} 道${label}，正在读取题目` });
       const images = [];
-      for (const question of read.questions) if (question.needsImage) {
-        await check(tabId, guard);
-        images.push(await frameCommand(frame.frameId, kind === 'video' ? 'CAPTURE_VIDEO_QUESTION' : 'CAPTURE_QUESTION', { id: question.id, guard }));
+      step = 'capture';
+      try {
+        for (const question of read.questions) if (question.needsImage) {
+          await check(tabId, guard);
+          images.push(await frameCommand(frame.frameId, kind === 'video' ? 'CAPTURE_VIDEO_QUESTION' : 'CAPTURE_QUESTION', { id: question.id, guard }));
+        }
+      } finally {
+        // 截图结束（成功或失败）立即释放后台截图的调试连接。
+        if (images.length || read.questions.some(question => question.needsImage)) {
+          await chrome.runtime.sendMessage({ type: 'CAPTURE_RELEASE' }).catch(() => {});
+        }
       }
+      step = 'answer';
       await state(tabId, guard, { status: `AI 正在分析${label}` });
       const answers = await chrome.runtime.sendMessage({ type: 'ANSWER', questions: read.questions, images, guard });
       if (answers?.error) throw new Error(answers.error);
@@ -130,6 +149,14 @@ const AIFlow = (() => {
       // 已发起提交则保留提交记录，即使响应断开也不能重试提交。
       const ai = latest?.ai?.stage === 'submitted' ? latest.ai : { kind, stage: 'error', revision: guard.revision,
         frameToken: guard.frameToken, fingerprint: guard.fingerprint, eventIdentity: guard.eventIdentity };
+      if (ai.stage !== 'submitted' && captureStageFailure(error.message || '', step)) {
+        const retries = latest?.captureRetries || 0;
+        // “不在前台”只能等用户返回或修改设置；其他截图问题在后台有限次自动重试。
+        const retryAt = !/课程标签页不在前台/.test(error.message || '') && retries < AI_CAPTURE_RETRIES ? Date.now() + AI_CAPTURE_RETRY_MS : null;
+        await waitForUser(tabId, task, kind, `${label}截图未完成，已保留当前题：${displayError(error)}${retryAt ? '；稍后自动重试' : ''}`,
+          { ...ai, stage: 'foreground', retryAt });
+        return;
+      }
       if (kind === 'quiz') await failQuiz(tabId, latest || task, displayError(error), ai);
       else await waitForUser(tabId, task, kind, `${label}需要人工处理：${displayError(error)}`, ai);
     }
@@ -171,6 +198,15 @@ const AIFlow = (() => {
     if (task.currentJobId !== job.id || (task.ai && task.ai.kind !== 'video')) {
       task = await saveTask(tabId, { ...jobReset(), phase: 'page', waitReason: null, currentJobId: job.id });
     }
+    if (task.ai?.stage === 'foreground' && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null });
+    if (task.ai?.stage === 'foreground') {
+      const retryDue = task.ai.retryAt && Date.now() >= task.ai.retryAt;
+      if (document.hidden && !retryDue) return true;
+      task = await saveTask(tabId, { ai: null, phase: 'page', waitReason: null,
+        captureRetries: retryDue && document.hidden ? (task.captureRetries || 0) + 1 : 0,
+        questionClosedAt: null, questionContinueClickedAt: null, questionResumePlayAt: null, questionResultAt: null,
+        status: document.hidden ? '正在后台重新读取视频弹题' : '已返回课程页，重新读取视频弹题' });
+    }
     if (task.ai?.code === 'unmatched-video') task = await saveTask(tabId, { ai: null });
     // 两次弹题可能间隔短于轮询周期，期间不一定能观察到“弹层关闭”。
     if (task.ai?.kind === 'video' && ['submitted', 'error'].includes(task.ai.stage) &&
@@ -194,6 +230,14 @@ const AIFlow = (() => {
     // 就把它当成做完，否则会离开等待、下一轮又重新填写同一份测验。
     if (ctx.treeTask?.kind === 'complete' && !(options.enabled && options.quiz)) return false;
     if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision && options.enabled && options.quiz) task = await saveTask(tabId, { ai: null, aiAttempts: 0 });
+    if (task.ai?.stage === 'foreground' && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null });
+    if (task.ai?.stage === 'foreground' && options.enabled && options.quiz) {
+      const retryDue = task.ai.retryAt && Date.now() >= task.ai.retryAt;
+      if (document.hidden && !retryDue) return true;
+      task = await saveTask(tabId, { ai: null, jobRevealedAt: null,
+        captureRetries: retryDue && document.hidden ? (task.captureRetries || 0) + 1 : 0,
+        status: document.hidden ? '正在后台重新读取章节测验' : '已返回课程页，重新读取章节测验' });
+    }
     // 到达重试时间：清掉错误并重新定位测验（重新展开任务点），再次识题。
     if (task.ai?.stage === 'error' && task.ai.retryAt && options.enabled && options.quiz) {
       if (Date.now() < task.ai.retryAt) return true;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "课程流程助手",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "minimum_chrome_version": "111",
   "description": "悬浮窗课程流程助手：按任务点播放与换节，可开关的章节测验及视频弹题 AI 识别。",
   "icons": {
@@ -16,7 +16,8 @@
     "webNavigation",
     "notifications",
     "activeTab",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://*.chaoxing.com/*",
@@ -66,5 +67,8 @@
       },
       "description": "一键静音 / 取消静音课程视频"
     }
-  }
+  },
+  "optional_permissions": [
+    "debugger"
+  ]
 }

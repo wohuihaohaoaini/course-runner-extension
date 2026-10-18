@@ -5,7 +5,7 @@ const DIAGNOSTIC_EVENTS = new Set(["start", "pause", "state", "snapshot", "comma
 const DIAGNOSTIC_PHASES = new Set(["directory", "enteringChapter", "returningDirectory", "page", "waiting", "switchingChapter", "advancing"]);
 const DIAGNOSTIC_STATES = new Set(["running", "paused", "error", "completed"]);
 const DIAGNOSTIC_COMMANDS = new Set(["PLAY", "INITIAL_PLAY", "RELOAD_MEDIA", "CONTINUE_VIDEO_QUESTION", "OPEN_TAB", "DISMISS_INTRO", "REVEAL_JOB", "SCROLL_DOCUMENT", "OPEN_CHAPTER", "NEXT", "READ_QUIZ", "CAPTURE_QUESTION", "FILL_QUIZ", "VERIFY_QUIZ", "SUBMIT_QUIZ", "CONFIRM_SUBMIT", "CONFIRM_TOP_SUBMIT", "READ_VIDEO_QUESTION", "CAPTURE_VIDEO_QUESTION", "FILL_VIDEO_QUESTION", "SUBMIT_VIDEO_QUESTION"]);
-const WAIT_REASONS = new Set(["videoQuestion", "face", "captcha", "quiz", "paused"]);
+const WAIT_REASONS = new Set(["videoQuestion", "face", "captcha", "quiz", "paused", "background"]);
 const JOB_TYPES = new Set(["video", "audio", "document", "quiz", "book", "link", "other"]);
 const VIDEO_QUESTION_FEEDBACK = new Set(["open", "submitting", "incorrect", "correct", "continue", "closed"]);
 let diagnosticWrites = Promise.resolve();
@@ -162,7 +162,7 @@ async function commandFrame(tabId, frameId, command, data) {
 // 需要用户处理时的桌面通知。同一标签页同一原因只保留一条，点击通知回到课程标签页。
 const NOTIFY_TITLES = {
   videoQuestion: "视频里出现了答题", face: "需要人脸识别", captcha: "需要输入验证码",
-  quiz: "有章节测验等你完成", paused: "视频被暂停了", done: "课程已完成", error: "运行停止了"
+  background: "课程需要回到前台", quiz: "有章节测验等你完成", paused: "视频被暂停了", done: "课程已完成", error: "运行停止了"
 };
 
 async function notify(tabId, reason, message) {
@@ -189,7 +189,7 @@ chrome.notifications?.onClicked.addListener(async (id) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
-    if (["SET_AI_SETTINGS", "CANCEL_AI", "AI_VALIDATE", "VIDEO_TRIAL_VALIDATE", "AI_CLAIM_SUBMISSION", "ANSWER", "CAPTURE_TAB", "FILL_BLANKS", "VERIFY_BLANKS"].includes(message.type)) return handleAIMessage(message, sender);
+    if (["SET_AI_SETTINGS", "CANCEL_AI", "AI_VALIDATE", "VIDEO_TRIAL_VALIDATE", "AI_CLAIM_SUBMISSION", "ANSWER", "CAPTURE_PREPARE", "CAPTURE_TAB", "CAPTURE_RELEASE", "FILL_BLANKS", "VERIFY_BLANKS"].includes(message.type)) return handleAIMessage(message, sender);
     if (message.type === "OPEN_AI_SETTINGS") {
       if (chrome.action?.openPopup) {
         try { await chrome.action.openPopup(); return { ok: true }; } catch { /* 旧浏览器不允许由内容脚本打开弹窗 */ }
@@ -242,3 +242,5 @@ async function toggleMute() {
 chrome.commands?.onCommand.addListener((command) => {
   if (command === "toggle-mute") toggleMute().catch(() => {});
 });
+
+if (typeof importScripts === "function") importScripts("background-playback.js");

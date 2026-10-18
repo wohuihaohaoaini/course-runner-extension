@@ -75,6 +75,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("notify").checked = settings.notify !== false;
     $("collapseCourseSidebar").checked = settings.collapseCourseSidebar === true;
     await renderAISettings();
+    await renderBackgroundSettings();
     timer = setInterval(render, 1500);
   } catch (error) { showError(error); }
 });
@@ -99,6 +100,54 @@ $("jumpMode").addEventListener("change", () => chrome.storage.local.set({ jumpMo
 $("quizMode").addEventListener("change", () => chrome.storage.local.set({ quizMode: $("quizMode").value }));
 $("collapseCourseSidebar").addEventListener("change", () => chrome.storage.local.set({ collapseCourseSidebar: $("collapseCourseSidebar").checked }));
 $("videoAnswerMode").addEventListener("change", () => saveAISettings({ videoAnswerMode: $("videoAnswerMode").value }).catch(showError));
+async function hasDebuggerPermission() {
+  try { return await chrome.permissions.contains({ permissions: ["debugger"] }); } catch { return false; }
+}
+
+// 设置与实际权限保持一致：权限被撤销时取消勾选。
+async function renderBackgroundSettings() {
+  const settings = await chrome.storage.local.get(["allowBackgroundPlayback", "allowBackgroundCapture"]);
+  const granted = await hasDebuggerPermission();
+  if (settings.allowBackgroundCapture === true && !granted) await saveAISettings({ allowBackgroundCapture: false });
+  $("allowBackgroundPlayback").checked = settings.allowBackgroundPlayback === true;
+  $("allowBackgroundCapture").checked = settings.allowBackgroundCapture === true && granted;
+}
+
+async function disableBackgroundCapture() {
+  await saveAISettings({ allowBackgroundCapture: false });
+  await chrome.permissions.remove({ permissions: ["debugger"] }).catch(() => {});
+  $("allowBackgroundCapture").checked = false;
+}
+
+$("allowBackgroundCapture").addEventListener("change", async () => {
+  const requested = $("allowBackgroundCapture").checked;
+  try {
+    if (requested) {
+      // 权限请求必须直接来自用户点击。弹窗若在授权对话框出现时关闭，后台服务会按权限变化同步设置。
+      const granted = await chrome.permissions.request({ permissions: ["debugger"] });
+      if (!granted) throw new Error("未授予后台截图权限：文字题仍可后台处理，图片题请回到课程页或把课程页单独放在一个窗口里");
+      await chrome.storage.local.set({ allowBackgroundPlayback: true });
+      await saveAISettings({ allowBackgroundCapture: true });
+      $("allowBackgroundPlayback").checked = true;
+      $("message").textContent = "后台截图答题已开启；图片题仍需开启 AI 并保存你自己的密钥";
+    } else {
+      await disableBackgroundCapture();
+      $("message").textContent = "后台截图答题已关闭，调试权限已撤销";
+    }
+  } catch (error) {
+    await renderBackgroundSettings().catch(() => {});
+    showError(error);
+  }
+});
+$("allowBackgroundPlayback").addEventListener("change", async () => {
+  const enabled = $("allowBackgroundPlayback").checked;
+  try {
+    await chrome.storage.local.set({ allowBackgroundPlayback: enabled });
+    // 后台截图依赖后台播放；关闭后台播放时一并关闭截图并撤销权限。
+    if (!enabled && $("allowBackgroundCapture").checked) await disableBackgroundCapture();
+    $("message").textContent = enabled ? "已允许后台播放" : "已关闭后台播放，课程页需保持在前台";
+  } catch (error) { showError(error); }
+});
 $("notify").addEventListener("change", () => chrome.storage.local.set({ notify: $("notify").checked }));
 $("clearTodos").addEventListener("click", async () => {
   await chrome.storage.local.remove("todos");

@@ -13,6 +13,11 @@ E2E_OUTPUT 可指定截图和结果 JSON 输出目录。
 
 run-ai.cjs：真实 Chromium 加载未修改的扩展；拦截模拟超星页和 DeepSeek 响应。
 覆盖连续三道视频弹题（含自定义多选、截图题及播放恢复核对）、多层 work 框架、重复的题型 data 值、新版 num_option 单选、判断、多选及 UEditor 填空、自动提交及确认、页内换节。
+background-flow.cjs（npm run test:background）：后台播放与后台答题。直接启动 Chromium（不经 Playwright，Playwright 会让附着的页面始终处于可见状态），
+本机 HTTPS 服务加域名映射提供同一套模拟课程（course-site.cjs），开始后在同一窗口切到另一个标签页，课程页全程是真实后台标签页。
+需要有界面的浏览器：Linux 下用 xvfb-run -a npm run test:background；E2E_VISION=1 时第三道视频弹题和章节测验需后台截图识别。
+测试副本把可选的 debugger 权限改为安装权限以免授权对话框，扩展源码不变。核对：课程页始终隐藏、用户标签页始终在前、课程页从未被激活、
+连续三道弹题与测验提交确认、换节、结束后无残留调试连接、标签页“不自动丢弃”设置已恢复、唤醒定时器已清除。
 panel.cjs：实际鼠标跨 iframe 拖动、滚轮滚动、状态更新保留 DOM 和滚动位置、AI 开关、悬浮球拖动。
 
 所有验证均不使用真实课程、真实 API 密钥或付费请求。
