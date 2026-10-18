@@ -121,6 +121,44 @@ test('closing the question only reports success after actual playback progress',
   assert.equal(r.task().playRetries, 0);
 });
 
+// 平台关闭弹题后常会把视频再暂停一次：一次 PLAY 不够，也不能因此把整节记入待办跳过。
+test('after a closed question the video is re-played a few times and the section is never skipped', async () => {
+  const info = { paused: true, ready: true, time: 120, duration: 600 };
+  const r = runner(() => [main(), cards([job('a', 'video')]), player(3, 'a', info)],
+    { phase: 'waiting', waitReason: 'videoQuestion', currentJobId: 'a' });
+  await r.tick();
+  const plays = () => commands(r.sent).filter(c => c === 'PLAY').length;
+  for (let i = 1; i <= 3; i++) {
+    r.stored['task:1'].questionResumePlayAt = Date.now() - 4000;
+    await r.tick();
+    assert.equal(plays(), i);
+  }
+  r.stored['task:1'].questionResumePlayAt = Date.now() - 4000;
+  await r.tick();
+  assert.equal(plays(), 3, 'at most three resume attempts while waiting');
+  r.stored['task:1'].questionClosedAt = Date.now() - 16000;
+  await r.tick();
+  assert.equal(r.task().phase, 'page');
+  assert.equal(r.task().waitReason, null);
+  assert.equal(r.stored.todos, undefined);
+  assert.deepEqual(r.task().skippedJobs, []);
+  assert.ok(!commands(r.sent).includes('OPEN_CHAPTER'));
+  // 回到正常播放流程后继续尝试播放。
+  await r.tick();
+  assert.equal(plays(), 4);
+});
+
+test('progress after a closed question counts as resumed even when the sample is paused', async () => {
+  const info = { paused: true, ready: true, time: 120, duration: 600 };
+  const r = runner(() => [main(), cards([job('a', 'video')]), player(3, 'a', info)],
+    { phase: 'waiting', waitReason: 'videoQuestion', currentJobId: 'a' });
+  await r.tick();
+  info.time = 126;
+  await r.tick();
+  assert.equal(r.task().phase, 'page');
+  assert.match(r.task().status, /播放已恢复/);
+});
+
 test('face recognition and captcha pause the run until they are gone', async () => {
   let face = true;
   let captcha = false;

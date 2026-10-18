@@ -98,7 +98,7 @@ function jobReset() {
     ai: null, aiAttempts: 0, captureRetries: 0, videoTrial: null, waitingSince: null, jobStartedAt: Date.now(), lastVideoTime: 0, lastProgressAt: null, videoEndedAt: null, playRetries: 0,
     initialPlayAttemptedAt: null, initialPlayWaitingAt: null, jobRevealedAt: null, mediaReloadedAt: null,
     documentAtBottomAt: null, questionContinueClickedAt: null, questionClosedAt: null,
-    questionResumeTime: null, questionResumePlayAt: null, questionResultAt: null
+    questionResumeTime: null, questionResumePlayAt: null, questionResumeTries: 0, questionResultAt: null
   };
 }
 
@@ -329,7 +329,7 @@ async function enterWaiting(tabId, task, reason, extra = {}) {
   const key = `${reason}:${task.activeChapterId}:${task.currentJobId || ""}`;
   const status = reason === 'videoQuestion' ? await videoManualStatus() : WAIT_STATUS[reason];
   await saveTask(tabId, { ...extra, phase: "waiting", waitReason: reason, waitingSince: Date.now(),
-    questionContinueClickedAt: null, questionClosedAt: null, questionResumePlayAt: null, notifiedKey: key, status });
+    questionContinueClickedAt: null, questionClosedAt: null, questionResumePlayAt: null, questionResumeTries: 0, notifiedKey: key, status });
   if (task.notifiedKey !== key) notifyUser(reason, status);
 }
 
@@ -594,7 +594,7 @@ const CHAPTER_PHASES = {
         surface.videoQuestionFeedback === "correct" ? "视频弹题已通过，等待平台显示继续按钮或关闭题目" :
         task.questionContinueClickedAt ? "弹题仍未关闭，请手动点击“继续”或关闭弹题" : await videoManualStatus();
       const submitted = task.ai?.stage === 'submitted' && surface.videoQuestionFeedback === 'open' && !task.questionContinueClickedAt;
-      return saveTask(tabId, { questionClosedAt: null, status: submitted ? Date.now() - task.ai.at > 30000 ?
+      return saveTask(tabId, { questionClosedAt: null, questionResumePlayAt: null, questionResumeTries: 0, status: submitted ? Date.now() - task.ai.at > 30000 ?
         '视频弹题提交后未收到明确结果，请人工核对；不会重复提交' : '视频弹题已点击提交，等待平台作答反馈' : status });
     }
     if (reason && reason !== task.waitReason) return enterWaiting(tabId, task, reason);
@@ -607,22 +607,26 @@ const CHAPTER_PHASES = {
       if (!task.questionClosedAt) return saveTask(tabId, { questionClosedAt: Date.now(), questionResumeTime: mediaTime,
         status: '视频弹题已关闭，正在核对播放是否恢复' });
       if (job?.finished || media?.video?.ended) return leaveWaiting(tabId, '视频弹题已结束，视频已播完，继续核对任务点', { mediaTime });
-      if (media?.video && !media.video.paused && mediaTime > (task.questionResumeTime ?? mediaTime) + 0.2) {
+      // 轮询时恰好处于暂停不代表两轮之间没播放：只要进度在涨就算已恢复。
+      if (media?.video && mediaTime > (task.questionResumeTime ?? mediaTime) + 0.2) {
         return leaveWaiting(tabId, '视频弹题已结束，播放已恢复', { mediaTime });
       }
-      if (media?.video?.paused && !task.questionResumePlayAt) {
-        await saveTask(tabId, { questionResumePlayAt: Date.now(), status: '视频弹题已关闭，正在恢复播放并等待进度增长' });
-        try { await frameCommand(media.frameId, 'PLAY'); }
-        catch (error) { await saveTask(tabId, { status: `弹题已关闭，播放未恢复：${displayError(error)}；请手动点击播放` }); }
-        return;
-      }
-      if (Date.now() - task.questionClosedAt > 15000 && job?.type === 'video') {
+      if (Date.now() - task.questionClosedAt > 15000) {
         // 后台时平台可能因页面不可见暂停视频，不能据此跳过本节。
         if (ctx.backgroundPlayback) return enterWaiting(tabId, task, 'background', { lastVideoTime: mediaTime });
-        return deferVideoChapter(tabId, task, ctx, job, '弹题结束后视频未能恢复播放');
+        // 弹题已经结束，剩下的只是普通暂停：交回正常播放流程继续重试，不因此跳过本节。
+        return leaveWaiting(tabId, '视频弹题已结束，视频仍暂停，继续尝试播放', { mediaTime });
       }
-      return saveTask(tabId, { status: Date.now() - task.questionClosedAt > 15000 ?
-        '弹题已关闭，但未检测到播放进度增长，请手动播放或检查播放器' : '弹题已关闭，等待视频进度增长以确认播放恢复' });
+      // 平台关闭弹题后常会再暂停一次，只播放一次不够；间隔几秒重试，最多 3 次。
+      const resumeTries = task.questionResumeTries || 0;
+      if (media?.video?.paused && resumeTries < 3 && Date.now() - (task.questionResumePlayAt || 0) >= 3000) {
+        await saveTask(tabId, { questionResumePlayAt: Date.now(), questionResumeTries: resumeTries + 1,
+          status: '视频弹题已关闭，正在恢复播放并等待进度增长' });
+        try { await frameCommand(media.frameId, 'PLAY'); }
+        catch (error) { await saveTask(tabId, { status: `弹题已关闭，播放未恢复：${displayError(error)}；正在重试` }); }
+        return;
+      }
+      return saveTask(tabId, { status: '弹题已关闭，等待视频进度增长以确认播放恢复' });
     }
     if (task.waitReason === "captcha") return leaveWaiting(tabId, "验证码已通过，继续", { mediaTime });
     if (task.waitReason === "face") return leaveWaiting(tabId, "人脸识别已完成，继续", { mediaTime });
