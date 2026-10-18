@@ -16,7 +16,7 @@
 2. 打开 `chrome://extensions`，开启开发者模式，点“加载已解压的扩展程序”，选择包含 `manifest.json` 的目录。
 3. 打开课程学习页，在悬浮窗点击“开始”。
 
-详细用法见 [安装与使用说明.txt](安装与使用说明.txt)。
+详细用法见 [安装与使用说明.txt](安装与使用说明.txt)。各版本改动见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## AI 说明
 
@@ -28,6 +28,8 @@ AI 功能需要自己的 DeepSeek API 密钥，只保存在本地扩展存储；
 npm install
 npm test
 ```
+
+发布新版本：改 `manifest.json` 与 `package.json` 的版本号 → 在 `CHANGELOG.md` 顶部加一节 → 提交并打 tag（`vX.Y.Z`）→ 打包运行文件为 zip → `gh release create`，说明使用 CHANGELOG 中该版本一节。
 
 ## 免责声明
 
