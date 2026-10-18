@@ -22,6 +22,7 @@ function fixture(kind='quiz', extra={}, onAnswer) {
         if(m.type==='AI_CLAIM_SUBMISSION'){const locks=stored.aiSubmissionLocks ||= {};const old=locks[m.key];if(m.confirmation?(!old||old.confirmed):old)return {claimed:false,record:old};locks[m.key]={at:Date.now(),confirmed:!!m.confirmation};return {claimed:true};}
         if(m.type==='COMMAND_FRAME'){
           commands.push(m.command);targets.push([m.command,m.frameId]);
+          if(m.command==='REVEAL_JOB'&&cards.revealError)throw new Error('测试：任务点定位失败');
           if(m.command==='READ_QUIZ'||m.command==='READ_VIDEO_QUESTION'){if(frame.readError)throw new Error(frame.readError);return {questions,fingerprint:frame.fingerprint || 'fp1'};}
           if(m.command==='FILL_QUIZ'||m.command==='FILL_VIDEO_QUESTION')filled.push(m.data);
           if(m.command==='SUBMIT_QUIZ'||m.command==='SUBMIT_VIDEO_QUESTION')submits++;
@@ -199,30 +200,36 @@ test('unmatched video AI has a bounded wait before deferring the section',async(
  await f.tick();assert.equal(f.stored.todos?.length,1);assert.notEqual(f.task().phase,'waiting');
 });
 test('interrupted processing state does not hold the run forever after reload',async()=>{
- const f=fixture('video');f.task().ai={kind:'video',stage:'processing',revision:'v1',at:Date.now()-90000};f.task().waitingSince=Date.now()-90000;f.task().aiAttempts=2;
- await f.tick();await f.tick();assert.equal(f.stored.todos?.length,1);assert.notEqual(f.task().phase,'waiting');
+ const f=fixture('video');f.task().ai={kind:'video',stage:'processing',revision:'v1',at:Date.now()-90000};f.task().waitingSince=Date.now()-90000;
+ await f.tick();assert.equal(f.stored.todos?.length,1);assert.notEqual(f.task().phase,'waiting');
 });
-test('interrupted processing state is retried automatically while attempts remain',async()=>{
- const f=fixture('video');f.task().ai={kind:'video',stage:'processing',revision:'v1',at:Date.now()-90000};
- await f.tick();assert.equal(f.task().ai.stage,'error');assert.ok(f.task().ai.retryAt);assert.equal(f.stored.todos,undefined);
- f.task().ai.retryAt=Date.now()-1;await f.tick();assert.equal(f.answers(),1);assert.equal(f.submits(),1);
+test('video AI failure still defers the section without retrying',async()=>{
+ const f=fixture('video');f.frame.readError='答题接口等待超时，请稍后重试';await f.tick();
+ assert.equal(f.task().ai.retryAt,undefined);await f.tick();assert.equal(f.stored.todos.length,1);assert.equal(f.answers(),0);
 });
-test('video AI failure is retried automatically and then succeeds',async()=>{
- const f=fixture('video');f.frame.readError='题目读取不完整';await f.tick();
- assert.equal(f.task().ai.stage,'error');assert.equal(f.task().aiAttempts,1);assert.match(f.task().status,/自动重新识别/);
- await f.tick();assert.equal(f.stored.todos,undefined);assert.equal(f.answers(),0);
- delete f.frame.readError;f.task().ai.retryAt=Date.now()-1;await f.tick();
- assert.equal(f.answers(),1);assert.equal(f.submits(),1);assert.equal(f.stored.todos,undefined);
+test('chapter quiz retries are bounded, then wait for the user',async()=>{
+ const f=fixture('quiz');f.frame.readError='答题接口等待超时，请稍后重试';
+ for(let i=0;i<3;i++){await f.tick();assert.ok(f.task().ai.retryAt);f.task().ai.retryAt=Date.now()-1;}
+ await f.tick();assert.equal(f.task().ai.retryAt,undefined);assert.match(f.task().status,/人工/);
+ await f.tick();assert.equal(f.answers(),0);assert.equal(f.task().waitReason,'quiz');
 });
-test('video AI retries are bounded, then the section is deferred',async()=>{
- const f=fixture('video');f.frame.readError='答题接口等待超时，请稍后重试';
- for(let i=0;i<2;i++){await f.tick();assert.ok(f.task().ai.retryAt);f.task().ai.retryAt=Date.now()-1;}
- await f.tick();assert.equal(f.task().ai.retryAt,undefined);await f.tick();
- assert.equal(f.stored.todos.length,1);assert.equal(f.answers(),0);assert.equal(f.submits(),0);
+test('chapter quiz errors that retrying cannot fix are not retried',async()=>{
+ const f=fixture('quiz');f.frame.readError='请先在扩展中填写答题接口密钥';await f.tick();
+ assert.equal(f.task().ai.retryAt,undefined);assert.match(f.task().status,/人工/);
 });
-test('errors that retrying cannot fix are not retried',async()=>{
- const f=fixture('video');f.frame.readError='请先在扩展中填写答题接口密钥';await f.tick();
- assert.equal(f.task().ai.retryAt,undefined);await f.tick();assert.equal(f.stored.todos.length,1);
+test('interrupted chapter quiz processing is retried automatically',async()=>{
+ const f=fixture('quiz');Object.assign(f.task(),{phase:'waiting',waitReason:'quiz',ai:{kind:'quiz',stage:'processing',revision:'v1',at:Date.now()-90000}});
+ await f.tick();assert.ok(f.task().ai.retryAt);f.task().ai.retryAt=Date.now()-1;await f.tick();assert.equal(f.answers(),1);assert.equal(f.filled.length,1);
+});
+test('a chapter quiz that never loads is revealed again and retried',async()=>{
+ const f=fixture('quiz');f.frame.quizPageVisible=false;await f.tick();assert.ok(f.task().jobRevealedAt);
+ f.task().jobRevealedAt=Date.now()-50000;await f.tick();assert.ok(f.task().ai.retryAt);assert.equal(f.task().waitReason,'quiz');
+ f.frame.quizPageVisible=true;f.task().ai.retryAt=Date.now()-1;await f.tick();
+ assert.equal(f.answers(),1);assert.equal(f.filled.length,1);
+});
+test('a chapter quiz reveal error is retried instead of stopping the run',async()=>{
+ const f=fixture('quiz');f.frame.quizPageVisible=false;f.cards.revealError=true;await f.tick();
+ assert.equal(f.task().state,'running');assert.ok(f.task().ai.retryAt);
 });
 test('chapter quiz AI failure is retried automatically',async()=>{
  const f=fixture('quiz');f.frame.readError='DeepSeek 返回的 JSON 无法解析';await f.tick();

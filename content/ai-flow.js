@@ -23,8 +23,9 @@ async function assertAICommand(guard) {
   }
 }
 
-// 识别失败（网络、超时、解析、读题或核对失败）在提交前自动重试；密钥、授权、结构不支持等无法靠重试解决的直接转人工或跳过。
-const AI_RETRY_DELAYS = [5000, 15000];
+// 章节测验识别失败（测验未加载、网络、超时、解析、截图或核对失败）在提交前自动重试；
+// 密钥、授权、结构不支持等无法靠重试解决的直接转人工。视频弹题保持失败即记待办换节。
+const AI_RETRY_DELAYS = [5000, 15000, 30000];
 const AI_FATAL_ERROR = /填写答题接口密钥|截图授权|状态码 40[0-4]|暂不支持|已关闭|已取消|模式已变化|设置已变化/;
 
 const AIFlow = (() => {
@@ -68,26 +69,15 @@ const AIFlow = (() => {
     await saveTask(tabId, { phase: 'waiting', waitReason: kind === 'video' ? 'videoQuestion' : 'quiz', ai, status, ...extra });
     if (!ai?.retryAt) notifyUser(kind === 'video' ? 'videoQuestion' : 'quiz', status);
   }
-  // 未提交的失败按次数退避重试；返回 true 表示已安排自动重试。
-  async function fail(tabId, task, kind, message, ai) {
-    const label = kind === 'video' ? '视频弹题' : '章节测验';
+  // 章节测验未提交的失败按次数退避重试；次数用尽或无法重试时转人工。
+  async function failQuiz(tabId, task, message, ai) {
     const attempts = (task.aiAttempts || 0) + 1;
     if (ai.stage === 'error' && attempts <= AI_RETRY_DELAYS.length && !AI_FATAL_ERROR.test(message)) {
       const delay = AI_RETRY_DELAYS[attempts - 1];
-      await waitForUser(tabId, task, kind, `${label}识别失败：${message}；${delay / 1000} 秒后自动重新识别（第 ${attempts}/${AI_RETRY_DELAYS.length} 次）`,
+      return waitForUser(tabId, task, 'quiz', `章节测验识别失败：${message}；${delay / 1000} 秒后自动重新识别（第 ${attempts}/${AI_RETRY_DELAYS.length} 次）`,
         { ...ai, retryAt: Date.now() + delay }, { aiAttempts: attempts });
-      return true;
     }
-    await waitForUser(tabId, task, kind, `${label}需要人工处理：${message}`, ai);
-    return false;
-  }
-  // 到达重试时间后清掉错误状态，让调用方重新走识题流程；未到时间返回 'wait'。
-  async function dueRetry(tabId, task, label) {
-    if (task.ai?.stage !== 'error' || !task.ai.retryAt) return null;
-    if (Date.now() < task.ai.retryAt) return 'wait';
-    await saveTask(tabId, { ai: null, phase: 'page', waitReason: null, questionClosedAt: null, questionContinueClickedAt: null,
-      status: `正在自动重新识别${label}（第 ${task.aiAttempts || 1}/${AI_RETRY_DELAYS.length} 次重试）` });
-    return 'go';
+    return waitForUser(tabId, task, 'quiz', `章节测验需要人工处理：${message}`, ai);
   }
   function quizFrame(ctx, job) {
     const frames = ctx.frames.filter(f => f.active && f.quizPageVisible && f.questionCount > 0);
@@ -140,18 +130,25 @@ const AIFlow = (() => {
       // 已发起提交则保留提交记录，即使响应断开也不能重试提交。
       const ai = latest?.ai?.stage === 'submitted' ? latest.ai : { kind, stage: 'error', revision: guard.revision,
         frameToken: guard.frameToken, fingerprint: guard.fingerprint, eventIdentity: guard.eventIdentity };
-      await fail(tabId, latest || task, kind, displayError(error), ai);
+      if (kind === 'quiz') await failQuiz(tabId, latest || task, displayError(error), ai);
+      else await waitForUser(tabId, task, kind, `${label}需要人工处理：${displayError(error)}`, ai);
     }
   }
   async function handleQuiz(tabId, task, ctx, job) {
     const frame = quizFrame(ctx, job);
     if (!frame) {
       if (!task.jobRevealedAt) {
-        await frameCommand(job.frameId, 'REVEAL_JOB', { id: job.id });
+        // 定位失败不能抛到运行循环（会让整个运行停在“出错”），改走测验重试。
+        try { await frameCommand(job.frameId, 'REVEAL_JOB', { id: job.id }); }
+        catch (error) {
+          const options = await aiOptions();
+          return failQuiz(tabId, task, `章节测验定位失败：${displayError(error)}`, { kind: 'quiz', stage: 'error', revision: options.revision });
+        }
         return saveTask(tabId, { jobRevealedAt: Date.now(), status: '正在等待章节测验加载' });
       }
       if (Date.now() - task.jobRevealedAt < 45000) return;
-      return waitForUser(tabId, task, 'quiz', '章节测验结构无法识别，请人工处理', { kind: 'quiz', stage: 'error' });
+      const options = await aiOptions();
+      return failQuiz(tabId, task, '章节测验未加载或结构无法识别', { kind: 'quiz', stage: 'error', revision: options.revision });
     }
     return perform(tabId, task, frame, 'quiz');
   }
@@ -180,16 +177,10 @@ const AIFlow = (() => {
         surface.videoQuestionFeedback === 'open' &&
         ((surface.videoQuestionFingerprint && task.ai.fingerprint && surface.videoQuestionFingerprint !== task.ai.fingerprint) ||
           (task.ai.eventIdentity && surface.videoQuestionIdentity && task.ai.eventIdentity !== surface.videoQuestionIdentity))) {
-      task = await saveTask(tabId, { ai: null, aiAttempts: 0, phase: 'page', waitReason: null,
+      task = await saveTask(tabId, { ai: null, phase: 'page', waitReason: null,
         questionClosedAt: null, questionContinueClickedAt: null, questionResumePlayAt: null, questionResultAt: null });
     }
-    if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null, aiAttempts: 0 });
-    // 刷新等原因中断的识题流程，同样按重试次数重新开始。
-    if (task.ai?.stage === 'processing' && Date.now() - (task.ai.at || 0) > 45000 &&
-        await fail(tabId, task, 'video', '识题流程被刷新或中断', { kind: 'video', stage: 'error', revision: options.revision })) return true;
-    const retry = await dueRetry(tabId, task, '视频弹题');
-    if (retry === 'wait') return true;
-    if (retry === 'go') task = (await chrome.storage.local.get(`task:${tabId}`))[`task:${tabId}`];
+    if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null });
     if (task.ai) return false;
     if (!['open', null, undefined].includes(ctx.questionFrame.videoQuestionFeedback)) return false;
     await perform(tabId, task, ctx.questionFrame, 'video');
@@ -203,14 +194,15 @@ const AIFlow = (() => {
     // 就把它当成做完，否则会离开等待、下一轮又重新填写同一份测验。
     if (ctx.treeTask?.kind === 'complete' && !(options.enabled && options.quiz)) return false;
     if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision && options.enabled && options.quiz) task = await saveTask(tabId, { ai: null, aiAttempts: 0 });
-    if (options.enabled && options.quiz) {
-      const retry = await dueRetry(tabId, task, '章节测验');
-      if (retry === 'wait') return true;
-      if (retry === 'go') task = (await chrome.storage.local.get(`task:${tabId}`))[`task:${tabId}`];
+    // 到达重试时间：清掉错误并重新定位测验（重新展开任务点），再次识题。
+    if (task.ai?.stage === 'error' && task.ai.retryAt && options.enabled && options.quiz) {
+      if (Date.now() < task.ai.retryAt) return true;
+      task = await saveTask(tabId, { ai: null, jobRevealedAt: null,
+        status: `正在自动重新识别章节测验（第 ${task.aiAttempts || 1}/${AI_RETRY_DELAYS.length} 次重试）` });
     }
     if (!task.ai && await enabled('quiz')) { await handleQuiz(tabId, task, ctx, job); return true; }
     if (task.ai?.stage === 'processing') {
-      await fail(tabId, task, 'quiz', '识题流程被刷新或中断', { kind: 'quiz', stage: 'error', revision: options.revision });
+      await failQuiz(tabId, task, '识题流程被刷新或中断', { kind: 'quiz', stage: 'error', revision: options.revision });
       return true;
     }
     if (task.ai?.stage !== 'submitted') return false;
