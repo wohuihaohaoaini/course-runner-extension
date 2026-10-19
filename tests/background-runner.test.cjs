@@ -81,13 +81,25 @@ test('background wait resumes by itself when real progress is seen', async () =>
   assert.match(r.task().status, /后台播放已恢复/);
 });
 
-test('background wait tries normal playback at most once a minute and never skips', async () => {
+test('background wait retries playback every 10 seconds (not once a minute) and never skips', async () => {
   const frames = [main(), cards([job('a', 'video')]), player(3, 'a', { paused: true, ready: true, time: 30, duration: 300 })];
-  const r = runner(frames, { phase: 'waiting', waitReason: 'background', currentJobId: 'a', lastVideoTime: 30, waitingSince: old(70000), backgroundWasHidden: true }, BG);
+  const r = runner(frames, { phase: 'waiting', waitReason: 'background', currentJobId: 'a', lastVideoTime: 30, waitingSince: old(11000), backgroundWasHidden: true }, BG);
   await r.tick();
   await r.tick();
   assert.equal(commands(r.sent).filter(c => c === 'PLAY').length, 1);
   assert.equal(r.task().phase, 'waiting');
+  r.stored['task:1'].backgroundPlayAt = old(11000);
+  await r.tick();
+  assert.equal(commands(r.sent).filter(c => c === 'PLAY').length, 2);
+  assert.equal(r.stored.todos, undefined);
+});
+
+test('snapshots record whether the course page was in the background', async () => {
+  const r = runner([main(), cards([job('a', 'video')]), player(3, 'a', { paused: false, ready: true, time: 50, duration: 300 })],
+    { currentJobId: 'a', backgroundWasHidden: true }, BG);
+  await r.tick();
+  const snapshot = r.sent.find(m => m.type === 'DIAG_LOG' && m.event === 'snapshot');
+  assert.equal(snapshot.details.pageHidden, true);
 });
 
 test('returning to the foreground leaves the background wait and resets throttled timers', async () => {

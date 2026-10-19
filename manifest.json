@@ -46,6 +46,7 @@
         "content/tabs.js",
         "content/video-question.js",
         "content/mute.js",
+        "content/visibility.js",
         "content/blank-editor.js",
         "content/quiz.js",
         "content/video-ai.js",
@@ -59,6 +60,17 @@
       ],
       "run_at": "document_idle",
       "all_frames": true
+    },
+    {
+      "matches": [
+        "https://*.chaoxing.com/*"
+      ],
+      "js": [
+        "content/visibility-shim.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
     }
   ],
   "commands": {

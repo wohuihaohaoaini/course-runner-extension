@@ -2,7 +2,7 @@
 // run-ai.cjs（Playwright 拦截）与 background-flow.cjs（本地 HTTPS 服务）共用，保证两条流程面对同一套页面。
 const {modernQuestion,wireModernChoices}=require('../fixtures/modern-quiz.cjs');
 const {videoQuestion}=require('../fixtures/video-quiz.cjs');
-module.exports=function createCourseSite({clip,vision=!!process.env.E2E_VISION,mutedVideo=true}={}){
+module.exports=function createCourseSite({clip,vision=!!process.env.E2E_VISION,mutedVideo=true,pauseWhenHidden=false}={}){
 const finished = new Set();
 const events=[];
 const jobs = id => id === '7' ? [{id:'v1',type:'video'},{id:'v2',type:'video'},{id:'q',type:'quiz'}] : [{id:'v3',type:'video'}];
@@ -25,7 +25,11 @@ function videoHTML(id) {
  const custom=modernQuestion('909','1');
  return `<!doctype html><html><meta charset="utf-8"><body><video id="video_html5_api" src="/clip.webm" style="width:320px;height:180px" preload="auto" ${mutedVideo?'muted':''}></video>
  <div id="question" style="display:none;position:absolute;top:10px;left:10px;width:440px;background:white;border:2px solid #2563EB;padding:14px">${markup}</div>
- <script>const v=document.querySelector('video');let asked=0,resumeAt=null,resumeQuestion=null;const q=document.querySelector('#question');const original=q.querySelector('.tkItem').innerHTML;
+ <script>${pauseWhenHidden?`/* 模拟学习通“切屏暂停”：页面不可见、失焦或移出窗口时暂停视频，并每秒检查一次。 */
+ (()=>{const vid=document.querySelector('video');const stop=t=>{if(!vid.paused){vid.pause();fetch('/event?type=platform-pause&reason='+t)}};
+ document.addEventListener('visibilitychange',()=>{if(document.hidden)stop('visibility')});window.onblur=()=>stop('blur');
+ setInterval(()=>{if(document.hidden||top.document.hidden)stop('poll-hidden');else if(!top.document.hasFocus())stop('poll-focus')},1000)})();`:''}
+ const v=document.querySelector('video');let asked=0,resumeAt=null,resumeQuestion=null;const q=document.querySelector('#question');const original=q.querySelector('.tkItem').innerHTML;
  v.addEventListener('timeupdate',()=>{
   if(resumeAt!==null && v.currentTime>resumeAt+0.15){fetch('/event?type=video-resumed&id=${id}&question='+resumeQuestion);resumeAt=null}
   if('${id}'==='v2' && asked<3 && v.currentTime>= [1,1.6,2.2][asked]){asked++;v.pause();q.style.display='block';
