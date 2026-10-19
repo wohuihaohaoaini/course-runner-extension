@@ -5,6 +5,7 @@
   "description": "仅用于扩展开发验证；加载扩展不需要 npm 安装",
   "scripts": {
     "test": "node --test tests/*.test.cjs",
+    "package": "node scripts/package.cjs",
     "test:e2e": "node tests/e2e/run-ai.cjs",
     "test:panel": "node tests/e2e/panel.cjs",
     "test:video": "node tests/e2e/video-flow.cjs",
