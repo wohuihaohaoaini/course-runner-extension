@@ -12,6 +12,12 @@ let diagnosticWrites = Promise.resolve();
 
 function errorCategory(message) {
   const value = String(message || "");
+  // 截图失败细分原因，便于从日志判断后台答题卡在哪一步（不含页面原文）。
+  if (/课程标签页不在前台/.test(value)) return "capture-foreground";
+  if (/截图授权/.test(value)) return "capture-permission";
+  if (/开发者工具|调试连接|Another debugger|already attached/i.test(value)) return "capture-debugger";
+  if (/后台截图/.test(value)) return "capture-background";
+  if (/未完整显示在屏幕内|被内层窗口截断|位置未稳定|布局变化|定位测验内嵌页面/.test(value)) return "capture-layout";
   if (/超时|timeout|aborted|AbortError/i.test(value)) return "timeout";
   if (/Could not establish connection|Receiving end does not exist|message port closed/i.test(value)) return "connection";
   if (/验证码|captcha/i.test(value)) return "captcha";
@@ -39,10 +45,12 @@ function sanitizeDiagnostic(event, details, tabId) {
     if (JOB_TYPES.has(data.jobType)) record.jobType = data.jobType;
     if (WAIT_REASONS.has(data.waitReason)) record.waitReason = data.waitReason;
     if (VIDEO_QUESTION_FEEDBACK.has(data.videoQuestionFeedback)) record.videoQuestionFeedback = data.videoQuestionFeedback;
+    if (typeof data.pageHidden === "boolean") record.pageHidden = data.pageHidden;
   }
   if (event === "command") {
     record.command = DIAGNOSTIC_COMMANDS.has(data.command) ? data.command : "UNKNOWN";
     record.ok = data.ok === true;
+    if (!record.ok && data.message) record.code = errorCategory(data.message);
   }
   if (event === "error") {
     record.code = errorCategory(data.message);
@@ -105,7 +113,7 @@ async function exportDiagnostics() {
       jobCount: "本页任务点数", jobIndex: "当前处理第几个任务点（从 0 开始）", jobType: "当前任务点类型",
       waitReason: "等待用户处理的原因", frameCount: "页面框架数量",
       videoQuestionFeedback: "视频弹题的页面反馈状态", command: "执行的操作",
-      ok: "操作是否成功", code: "错误类别", source: "错误来源",
+      ok: "操作是否成功", code: "错误类别（操作失败时也会记录）", pageHidden: "课程页当时是否在后台（不可见）", source: "错误来源",
       kind: "结构记录类型（structure）",
       frame: "页面框架编号（0=最外层页面，-1=未能确定编号的内嵌页）",
       active: "该框架是否被判定为可见；false 可能表示内嵌页被隐藏，也可能表示无法判断",

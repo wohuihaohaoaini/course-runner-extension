@@ -17,7 +17,7 @@ fs.mkdirSync(output, { recursive: true });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 execFileSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=c=0x087b71:s=320x180:r=10:d=5', '-c:v', 'libvpx', '-an', path.join(temp, 'clip.webm')], { stdio: 'ignore' });
-const site = require('./course-site.cjs')({ clip: fs.readFileSync(path.join(temp, 'clip.webm')), vision: VISION, mutedVideo: false });
+const site = require('./course-site.cjs')({ clip: fs.readFileSync(path.join(temp, 'clip.webm')), vision: VISION, mutedVideo: false, pauseWhenHidden: true });
 
 // 测试用扩展副本：只复制扩展运行需要的文件，内容与源码一致。
 const source = path.resolve(__dirname, '../..');
@@ -173,6 +173,8 @@ function connect(url) {
     assert.equal(events.filter(e => e.type === 'video-submit').length, 3);
     assert.equal(events.filter(e => e.type === 'video-continue').length, 3);
     assert.equal(events.filter(e => e.type === 'video-resumed').length, 3);
+    // 开启后台播放后，平台的切屏暂停不应再触发。
+    assert.deepEqual(events.filter(e => e.type === 'platform-pause'), []);
     assert.equal(events.filter(e => e.type === 'quiz-submit').length, 1);
     assert.equal(events.filter(e => e.type === 'quiz-confirm').length, 1);
     assert.equal(events.filter(e => e.type === 'quiz-cancel').length, 0);

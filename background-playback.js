@@ -2,7 +2,7 @@
 // - 关闭自动丢弃，避免浏览器在内存紧张时卸载课程页；停止、暂停、关闭功能或离开课程后恢复原设置。
 // - 用浏览器的定时唤醒（alarms）补充页面计时器：后台页面的计时器会被节流，唤醒只请求页面执行一轮检查，
 //   页面内与自身定时器互斥，不会重复识题、提交或换节。
-// - 不修改页面可见性，不伪造心跳或学习时长；平台暂停后台视频时由页面提示用户。
+// - 页面可见性由 content/visibility-shim.js 处理（播放器不再因切屏暂停）；不伪造心跳或学习时长。
 const BackgroundPlayback = (() => {
   const ALARM = 'course-runner-background';
   const KEY = 'backgroundPlaybackTabs';

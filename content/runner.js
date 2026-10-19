@@ -36,7 +36,7 @@ async function frameCommand(frameId, command, data) {
     recordDiagnostic("command", { command, ok: true });
     return result;
   } catch (error) {
-    recordDiagnostic("command", { command, ok: false });
+    recordDiagnostic("command", { command, ok: false, message: error?.message || String(error) });
     throw error;
   }
 }
@@ -647,8 +647,8 @@ const CHAPTER_PHASES = {
       if (info && !info.paused && info.time > (task.lastVideoTime || 0) + 1) {
         return leaveWaiting(tabId, "后台播放已恢复，继续运行", { mediaTime: info.time });
       }
-      // 每分钟最多尝试一次正常播放；不伪造页面可见性，平台仍暂停时保持等待。
-      if (media && info?.paused && Date.now() - (task.backgroundPlayAt || task.waitingSince || 0) > 60000) {
+      // 后台视频被暂停时每 10 秒尝试恢复一次播放；仍未恢复时保持等待，不跳过本节。
+      if (media && info?.paused && Date.now() - (task.backgroundPlayAt || task.waitingSince || 0) > 10000) {
         await saveTask(tabId, { backgroundPlayAt: Date.now() });
         await frameCommand(media.frameId, "PLAY").catch(() => {});
       }
@@ -692,6 +692,7 @@ function recordSnapshot(task, ctx) {
     jobIndex: job ? jobs.indexOf(job) : undefined,
     jobType: job?.type,
     waitReason: task.waitReason || undefined,
+    pageHidden: document.hidden === true,
     remainingTasks: ctx.treeTask?.count,
     frameCount: ctx.frames.length
   });
