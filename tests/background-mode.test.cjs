@@ -143,6 +143,19 @@ test('turning the setting off, stopping the run or closing the tab releases the 
   }
 });
 
+test('closing background capture releases all course-tab sessions', async () => {
+  const f = fixture({ tab: { active: false }, stored: backgroundOn, permission: true });
+  f.stored['task:2'] = { ...f.stored['task:1'] };
+  f.context.testGuard = guard;
+  await f.send({ type: 'CAPTURE_PREPARE', guard, pageHidden: true });
+  await vm.runInContext('prepareCapture({ id: 2, windowId: 1 }, testGuard, true)', f.context);
+  assert.equal(vm.runInContext('captureSessions.size', f.context), 2);
+  await f.context.chrome.storage.local.set({ allowBackgroundCapture: false });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(vm.runInContext('captureSessions.size', f.context), 0);
+  assert.deepEqual(ofType(f.log, 'detach').map(e => e[1]).sort(), [1, 2]);
+});
+
 test('one capture at a time per course tab', async () => {
   const f = fixture({ tab: { active: false }, stored: backgroundOn, permission: true });
   f.context.chrome.debugger.sendCommand = () => new Promise(resolve => setTimeout(() => resolve({ data: 'QUJD' }), 30));
@@ -151,16 +164,65 @@ test('one capture at a time per course tab', async () => {
   assert.match([a, b].find(r => r.error).error, /已有截图请求/);
 });
 
-test('debugger permission changes keep the settings in sync (popup may close during the prompt)', async () => {
-  const f = fixture({ permission: false });
+test('debugger permission grants do not enable background features without the user choosing them', async () => {
+  const f = fixture({ permission: true });
   await f.events.added({ permissions: ['debugger'] });
-  assert.equal(f.stored.allowBackgroundCapture, true);
-  assert.equal(f.stored.allowBackgroundPlayback, true);
-  assert.notEqual(f.stored.aiRevision, 's1', 'changing capture settings invalidates in-flight AI work');
+  assert.notEqual(f.stored.allowBackgroundCapture, true);
+  assert.notEqual(f.stored.allowBackgroundPlayback, true);
+  assert.equal(f.stored.aiRevision, 's1');
+  await f.context.chrome.storage.local.set({ allowBackgroundCapture: true });
+  await f.events.added({ permissions: ['debugger'] });
+  assert.equal(f.stored.allowBackgroundCapture, true, 'preserve the user setting');
   await f.events.removed({ permissions: ['debugger'] });
   assert.equal(f.stored.allowBackgroundCapture, false);
-  await f.events.added({ permissions: ['notifications'] });
-  assert.equal(f.stored.allowBackgroundCapture, false);
+});
+
+test('stopping during debugger attachment releases a late connection without capturing', async () => {
+  const f = fixture({ tab: { active: false }, stored: backgroundOn, permission: true });
+  let finishAttach, beganAttach;
+  const started = new Promise(resolve => { beganAttach = resolve; });
+  f.context.chrome.debugger.attach = () => new Promise(resolve => { finishAttach = resolve; beganAttach(); });
+  const pending = f.send({ type: 'CAPTURE_PREPARE', guard, pageHidden: true });
+  await started;
+  await f.context.chrome.storage.local.set({ 'task:1': { state: 'paused', runId: 'r1' } });
+  finishAttach();
+  const result = await pending;
+  assert.ok(result.error, 'a stopped request must not report successful preparation');
+  assert.equal(ofType(f.log, 'command').length, 0, 'do not capture after stopping');
+  assert.equal(ofType(f.log, 'detach').length, 1, 'release the connection that arrived after cancellation');
+  assert.equal(vm.runInContext('captureSessions.size', f.context), 0);
+});
+
+test('turning background capture off during attachment explains that the setting was closed', async () => {
+  const f = fixture({ tab: { active: false }, stored: backgroundOn, permission: true });
+  let finishAttach, beganAttach;
+  const started = new Promise(resolve => { beganAttach = resolve; });
+  f.context.chrome.debugger.attach = () => new Promise(resolve => { finishAttach = resolve; beganAttach(); });
+  const pending = f.send({ type: 'CAPTURE_PREPARE', guard, pageHidden: true });
+  await started;
+  await f.context.chrome.storage.local.set({ allowBackgroundCapture: false });
+  finishAttach();
+  const result = await pending;
+  assert.match(result.error, /后台截图设置已关闭/);
+  assert.doesNotMatch(result.error, /授权/);
+  assert.equal(ofType(f.log, 'command').length, 0);
+  assert.equal(ofType(f.log, 'detach').length, 1);
+});
+
+test('attachment that succeeds after a timeout is detached without leaking or replacing another request', async () => {
+  const f = fixture({ tab: { active: false }, stored: backgroundOn, permission: true });
+  let finishAttach;
+  f.context.chrome.debugger.attach = () => new Promise(resolve => { finishAttach = resolve; });
+  f.context.setTimeout = (fn, ms) => setTimeout(fn, ms === 10000 ? 5 : ms);
+  const result = await f.send({ type: 'CAPTURE_PREPARE', guard, pageHidden: true });
+  assert.ok(result.error);
+  const competing = await f.send({ type: 'CAPTURE_PREPARE', guard, pageHidden: true });
+  assert.match(competing.error, /上次调试连接/);
+  finishAttach();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(ofType(f.log, 'detach').length, 1);
+  assert.equal(ofType(f.log, 'command').length, 0);
+  assert.equal(vm.runInContext('captureSessions.size + pendingCaptureAttaches.size', f.context), 0);
 });
 
 test('background playback protects the running course tab from discarding and restores it afterwards', async () => {

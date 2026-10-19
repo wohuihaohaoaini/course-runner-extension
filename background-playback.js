@@ -48,15 +48,12 @@ const BackgroundPlayback = (() => {
     return pending;
   }
 
-  // 后台截图权限只由设置页的“后台截图答题”申请。弹窗可能在授权对话框出现时关闭，
-  // 所以以浏览器的权限变化为准同步设置；用户在扩展管理页撤销权限时同样关闭该功能。
+  // debugger 随安装授予；取得权限不代表用户选择开启功能。
+  // 仅在权限失效时关闭截图，开启操作交给设置页。
   async function permissionChanged(permissions, granted) {
-    if (!permissions?.permissions?.includes('debugger')) return;
-    const patch = granted ? { allowBackgroundCapture: true, allowBackgroundPlayback: true } : { allowBackgroundCapture: false };
-    if (typeof setAISettings === 'function') {
-      if (granted) await chrome.storage.local.set({ allowBackgroundPlayback: true });
-      await setAISettings({ allowBackgroundCapture: patch.allowBackgroundCapture });
-    } else await chrome.storage.local.set(patch);
+    if (!permissions?.permissions?.includes('debugger') || granted) return;
+    if (typeof setAISettings === 'function') await setAISettings({ allowBackgroundCapture: false });
+    else await chrome.storage.local.set({ allowBackgroundCapture: false });
   }
 
   function init() {

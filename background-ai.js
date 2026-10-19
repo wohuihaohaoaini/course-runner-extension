@@ -98,12 +98,13 @@ async function claimAISubmission(tabId, guard, key, confirmation = false) {
 // 截图有两条路径：
 // 1. 课程页是所在窗口当前选中的标签页且窗口未最小化：用 captureVisibleTab，不要求窗口获得焦点，
 //    因此把课程页单独放在一个窗口里也能截图。
-// 2. 课程页被切到后台、窗口最小化或被遮挡：仅在用户开启“后台截图答题”并授予可选调试权限后，
+// 2. 课程页被切到后台、窗口最小化或被遮挡：仅在用户开启“后台截图答题”后（调试权限随安装授予），
 //    通过调试接口对这个标签页单独截图，不激活标签页、不抢焦点。
 const CAPTURE_FOREGROUND_MESSAGE = "课程标签页不在前台，无法截图：请回到课程页，或把课程页单独放在一个未最小化的窗口里，或开启“后台截图答题”";
 const CAPTURE_SESSION_MS = 20000;
 const CAPTURE_COMMAND_MS = 10000;
 const captureSessions = new Map();
+const pendingCaptureAttaches = new Map();
 
 async function backgroundCaptureAllowed() {
   const settings = await chrome.storage.local.get(["allowBackgroundPlayback", "allowBackgroundCapture"]);
@@ -132,16 +133,17 @@ function withTimeout(promise, ms, message) {
     .finally(() => clearTimeout(timer));
 }
 
-async function releaseCaptureSession(tabId) {
+async function releaseCaptureSession(tabId, expected) {
   const session = captureSessions.get(tabId);
-  if (!session) return;
+  if (!session || (expected && session !== expected)) return;
+  session.cancelled = true;
   captureSessions.delete(tabId);
   clearTimeout(session.timer);
   if (session.attached) await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
 function releaseAllCaptureSessions() {
-  return Promise.all([...captureSessions.keys()].map(releaseCaptureSession));
+  return Promise.all([...captureSessions.keys()].map(tabId => releaseCaptureSession(tabId)));
 }
 
 // 连接调试接口会让浏览器显示调试提示条并改变页面可视高度，所以先连接、再由页面测量题目位置。
@@ -155,24 +157,42 @@ async function openCaptureSession(tab, guard) {
     await existing.ready;
     return existing;
   }
-  const session = { runId: guard.runId, attached: false, busy: false, timer: null, ready: null };
+  if (pendingCaptureAttaches.has(tab.id)) throw new Error("后台截图暂不可用：上次调试连接尚未结束，请稍后重试");
+  const session = { runId: guard.runId, attached: false, busy: false, cancelled: false, timer: null, ready: null };
   captureSessions.set(tab.id, session);
   session.timer = setTimeout(() => releaseCaptureSession(tab.id), CAPTURE_SESSION_MS);
   session.ready = (async () => {
     try {
       const current = await chrome.tabs.get(tab.id);
       if (!/^https:\/\/[^/]+\.chaoxing\.com\//.test(current.url || "")) throw new Error("课程页面已变化");
-      await withTimeout(chrome.debugger.attach({ tabId: tab.id }, "1.3"), CAPTURE_COMMAND_MS, "调试连接超时");
-      session.attached = true;
+      const attaching = chrome.debugger.attach({ tabId: tab.id }, "1.3").then(async () => {
+        session.attached = true;
+        // attach 本身不能取消，晚到的连接也必须释放；未结束前禁止新的连接竞争同一标签页。
+        if (session.cancelled || captureSessions.get(tab.id) !== session) {
+          await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+          session.attached = false;
+          throw new Error("截图请求已取消");
+        }
+      }).finally(() => { if (pendingCaptureAttaches.get(tab.id) === attaching) pendingCaptureAttaches.delete(tab.id); });
+      pendingCaptureAttaches.set(tab.id, attaching);
+      await withTimeout(attaching, CAPTURE_COMMAND_MS, "调试连接超时");
+      await validateAIContext(tab.id, guard);
+      if (session.cancelled || !await backgroundCaptureAllowed()) throw new Error("截图请求已取消");
       // 后台标签页第一次截图时浏览器会重新绘制并可能调整页面尺寸（调试提示条也会改变可视高度）。
       // 先截一张丢弃，等页面稳定后再由页面测量题目位置，避免正式截图时布局变化。
       await withTimeout(chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false }),
         CAPTURE_COMMAND_MS, "浏览器未在限定时间内返回后台截图");
       await new Promise(resolve => setTimeout(resolve, 300));
+      await validateAIContext(tab.id, guard);
+      if (session.cancelled || !await backgroundCaptureAllowed()) throw new Error("截图请求已取消");
     } catch (error) {
-      await releaseCaptureSession(tab.id);
-      throw new Error(`后台截图暂不可用：${/Another debugger|already attached/i.test(error?.message || "") ?
-        "课程页已打开开发者工具或其他调试连接，请关闭后重新读取" : "请检查“后台截图答题”授权，或回到课程页重新读取"}；当前题目会保留`);
+      await releaseCaptureSession(tab.id, session);
+      // 关闭开关会先触发释放，取消原因以当前设置为准，避免提示用户去检查授权。
+      const cancelled = error?.message === "截图请求已取消";
+      const reason = cancelled ? (await backgroundCaptureAllowed() ? "截图请求已取消" : "后台截图设置已关闭") :
+        /Another debugger|already attached/i.test(error?.message || "") ?
+          "课程页已打开开发者工具或其他调试连接，请关闭后重新读取" : "请检查“后台截图答题”授权，或回到课程页重新读取";
+      throw new Error(`后台截图暂不可用：${reason}；当前题目会保留`);
     }
   })();
   await session.ready;
