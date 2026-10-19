@@ -15,10 +15,15 @@ function errorCategory(message) {
   // 截图失败细分原因，便于从日志判断后台答题卡在哪一步（不含页面原文）。
   if (/课程标签页不在前台/.test(value)) return "capture-foreground";
   if (/截图授权/.test(value)) return "capture-permission";
-  if (/开发者工具|调试连接|Another debugger|already attached/i.test(value)) return "capture-debugger";
+  if (/开发者工具|Another debugger|already attached/i.test(value)) return "capture-debugger";
+  if (/调试连接超时/.test(value)) return "capture-attach-timeout";
+  if (/截图超时/.test(value)) return "capture-timeout";
+  if (/后台截图暂不可用：课程页面已变化/.test(value)) return "capture-page-changed";
   if (/后台截图/.test(value)) return "capture-background";
   if (/未完整显示在屏幕内|被内层窗口截断|定位测验内嵌页面/.test(value)) return "capture-offscreen";
-  if (/位置未稳定|布局变化/.test(value)) return "capture-unstable";
+  // 拆开两种不稳定：一直没停下来（unsettled），还是截图那一刻发生了移动（moved）。
+  if (/位置未稳定/.test(value)) return "capture-unsettled";
+  if (/布局变化/.test(value)) return "capture-moved";
   if (/截图/.test(value)) return "capture-other";
   if (/超时|timeout|aborted|AbortError/i.test(value)) return "timeout";
   if (/Could not establish connection|Receiving end does not exist|message port closed/i.test(value)) return "connection";

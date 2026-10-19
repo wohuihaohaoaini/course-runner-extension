@@ -62,11 +62,27 @@ test('new layout blanks fill and reject replacement questions with the same id',
  assert.match(p.run('blankEditorAction("q1",["旧题答案"],"fill",expected).error'),/变化/);assert.equal(value,'');
  }finally{p.close()}
 });
-test('scrolling during asynchronous capture rejects the screenshot',async()=>{
+test('scroll or resize events that do not move the question keep the screenshot',async()=>{
  const p=page(quiz);try {
  p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
- const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_TAB'){p.w.dispatchEvent(new p.w.Event('scroll'));return 'data:image/png;base64,abc'}return send(m)};
- await assert.rejects(p.run('captureStableViewport(getQuestionElements()[0],g,topViewportRect(getQuestionElements()[0]))'),/滚动|布局/);
+ const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_TAB'){p.w.dispatchEvent(new p.w.Event('scroll'));p.w.dispatchEvent(new p.w.Event('resize'));return 'data:image/png;base64,abc'}return send(m)};
+ assert.equal(await p.run('captureStableViewport(getQuestionElements()[0],g,topViewportRect(getQuestionElements()[0]))'),'data:image/png;base64,abc');
+ }finally{p.close()}
+});
+test('a question that moves during asynchronous capture rejects the screenshot',async()=>{
+ const p=page(quiz);try {
+ p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
+ let top=0;p.w.Element.prototype.getBoundingClientRect=()=>({width:300,height:180,top,left:0});
+ const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_TAB'){top=30;return 'data:image/png;base64,abc'}return send(m)};
+ await assert.rejects(p.run('captureStableViewport(getQuestionElements()[0],g,topViewportRect(getQuestionElements()[0]))'),/布局变化/);
+ }finally{p.close()}
+});
+test('sub-pixel jitter during capture does not count as movement',async()=>{
+ const p=page(quiz);try {
+ p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
+ let top=10;p.w.Element.prototype.getBoundingClientRect=()=>({width:300,height:180,top,left:0});
+ const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_TAB'){top=10.3;return 'data:image/png;base64,abc'}return send(m)};
+ assert.equal(await p.run('captureStableViewport(getQuestionElements()[0],g,topViewportRect(getQuestionElements()[0]))'),'data:image/png;base64,abc');
  }finally{p.close()}
 });
 
@@ -279,12 +295,21 @@ test('a background screenshot retakes once after the hidden tab resizes during t
  assert.equal(shots,2);
  }finally{p.close()}
 });
-test('a foreground layout change still rejects without a second screenshot',async()=>{
+test('a foreground screenshot is retaken after the question moves once',async()=>{
+ const p=page(quiz);try {
+ p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
+ let top=0,shots=0;p.w.Element.prototype.getBoundingClientRect=()=>({width:300,height:180,top,left:0});p.w.Element.prototype.scrollIntoView=()=>{};p.w.Image=class{set src(v){setTimeout(()=>this.onerror?.())}};
+ const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_PREPARE')return {mode:'visible'};if(m.type==='CAPTURE_TAB'){shots++;if(shots===1)top=40;return 'data:image/png;base64,abc'}return send(m)};
+ await assert.rejects(p.run('captureQuestion(questionId(getQuestionElements()[0],0),g)'),/无法解码/);
+ assert.equal(shots,2);
+ }finally{p.close()}
+});
+test('a question that keeps moving gives up after three screenshots',async()=>{
  const p=page(quiz);try {
  p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
  let top=0,shots=0;p.w.Element.prototype.getBoundingClientRect=()=>({width:300,height:180,top,left:0});p.w.Element.prototype.scrollIntoView=()=>{};p.w.Image=class{set src(v){setTimeout(()=>this.onerror?.())}};
  const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_PREPARE')return {mode:'visible'};if(m.type==='CAPTURE_TAB'){shots++;top+=40;return 'data:image/png;base64,abc'}return send(m)};
  await assert.rejects(p.run('captureQuestion(questionId(getQuestionElements()[0],0),g)'),/布局变化/);
- assert.equal(shots,1);
+ assert.equal(shots,3);
  }finally{p.close()}
 });

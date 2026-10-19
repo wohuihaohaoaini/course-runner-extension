@@ -260,3 +260,25 @@ test('alarm wake-up does not wait for the page round (which may include an AI re
   await Promise.race([f.settle(), new Promise((_, reject) => setTimeout(() => reject(new Error('blocked')), 500))]);
   assert.equal(f.log.filter(e => e[1] === 'RUNNER_PULSE').length, 1);
 });
+test('with background playback on, mute is applied to the whole tab and only our own mute is undone', async () => {
+  const f = fixture({ stored: { allowBackgroundPlayback: true, muted: false } });
+  f.context.chrome.runtime.id = 'ext';
+  const update = f.context.chrome.tabs.update;
+  f.context.chrome.tabs.update = async (id, patch) => {
+    if ('muted' in patch) f.tabState.mutedInfo = patch.muted ? { muted: true, reason: 'extension', extensionId: 'ext' } : { muted: false };
+    return update(id, patch);
+  };
+  await f.context.chrome.storage.local.set({ muted: true });
+  await f.settle();
+  const mutes = () => JSON.parse(JSON.stringify(ofType(f.log, 'update').map(e => e[2]).filter(p => 'muted' in p)));
+  assert.deepEqual(mutes(), [{ muted: true }]);
+  await f.context.chrome.storage.local.set({ muted: false });
+  await f.settle();
+  assert.deepEqual(mutes(), [{ muted: true }, { muted: false }]);
+});
+test('a tab the user muted themselves is never unmuted, and background off leaves tab mute alone', async () => {
+  const f = fixture({ stored: { allowBackgroundPlayback: false, muted: true }, tab: { mutedInfo: { muted: true, reason: 'user' } } });
+  f.context.chrome.runtime.id = 'ext';
+  await f.settle();
+  assert.equal(ofType(f.log, 'update').filter(e => 'muted' in e[2]).length, 0);
+});

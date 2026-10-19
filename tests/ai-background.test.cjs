@@ -133,3 +133,13 @@ test('a question still empty after the re-ask stops filling as before',async()=>
   const r=await f.send({type:'ANSWER',questions,images:[],guard});
   assert.match(r.error,/重问后仍无法判断/); assert.equal(calls,2);
 });
+test('capture failures keep a specific category in the diagnostic log',()=>{
+  const f=fixture();
+  const code=m=>f.run(`errorCategory(${JSON.stringify(m)})`);
+  assert.equal(code('题目 q1 页面位置未稳定，停止识别'),'capture-unsettled');
+  assert.equal(code('截图期间题目位置发生变化（布局变化），请保持页面稳定后重新开始'),'capture-moved');
+  assert.equal(code(`后台截图暂不可用：${f.run('debuggerFailureReason(new Error(DEBUGGER_SCREENSHOT_TIMEOUT))')}；当前题目会保留`),'capture-timeout');
+  assert.equal(code(`后台截图暂不可用：${f.run('debuggerFailureReason(new Error("调试连接超时"))')}；当前题目会保留`),'capture-attach-timeout');
+  assert.equal(code(`后台截图暂不可用：${f.run('debuggerFailureReason(new Error("Another debugger is already attached"))')}；当前题目会保留`),'capture-debugger');
+  assert.equal(code(`后台截图暂不可用：${f.run('debuggerFailureReason(new Error("课程页面已变化或需要验证，旧结果已失效"))')}；当前题目会保留`),'capture-page-changed');
+});
