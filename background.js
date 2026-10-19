@@ -17,7 +17,9 @@ function errorCategory(message) {
   if (/截图授权/.test(value)) return "capture-permission";
   if (/开发者工具|调试连接|Another debugger|already attached/i.test(value)) return "capture-debugger";
   if (/后台截图/.test(value)) return "capture-background";
-  if (/未完整显示在屏幕内|被内层窗口截断|位置未稳定|布局变化|定位测验内嵌页面/.test(value)) return "capture-layout";
+  if (/未完整显示在屏幕内|被内层窗口截断|定位测验内嵌页面/.test(value)) return "capture-offscreen";
+  if (/位置未稳定|布局变化/.test(value)) return "capture-unstable";
+  if (/截图/.test(value)) return "capture-other";
   if (/超时|timeout|aborted|AbortError/i.test(value)) return "timeout";
   if (/Could not establish connection|Receiving end does not exist|message port closed/i.test(value)) return "connection";
   if (/验证码|captcha/i.test(value)) return "captcha";

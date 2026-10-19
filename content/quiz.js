@@ -280,7 +280,12 @@ async function captureElement(root, id, minHeight = 60, guard, verifyLayout) {
   const prepared = await chrome.runtime.sendMessage({ type: 'CAPTURE_PREPARE', guard, pageHidden: document.hidden === true });
   if (prepared?.error) throw new Error(prepared.error);
   // 同一轮识题的多张截图共用一个调试连接，由识题流程在全部截图结束后释放（到期也会自动释放）。
-  return captureMeasuredElement(root, id, minHeight, guard, verifyLayout);
+  try { return await captureMeasuredElement(root, id, minHeight, guard, verifyLayout); }
+  catch (error) {
+    // 后台标签页的尺寸变化（如调试提示条）可能要到第一次正式截图时才生效：重新测量位置后再截一次。
+    if (document.hidden !== true || !/布局变化|位置未稳定/.test(error?.message || '')) throw error;
+    return captureMeasuredElement(root, id, minHeight, guard, verifyLayout);
+  }
 }
 
 async function captureMeasuredElement(root, id, minHeight, guard, verifyLayout) {

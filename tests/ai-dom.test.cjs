@@ -268,3 +268,23 @@ test('a browser play promise that never settles cannot block the runner indefini
  const p=page('<video></video>','https://mooc1.chaoxing.com/ananas/modules/video/index.html');
  try{p.w.document.querySelector('video').play=()=>new Promise(()=>{});await assert.rejects(p.run('FRAME_COMMANDS.PLAY()'),/响应|超时/);}finally{p.close()}
 });
+test('a background screenshot retakes once after the hidden tab resizes during the first capture',async()=>{
+ const p=page(quiz);try {
+ Object.defineProperty(p.w.document,'hidden',{configurable:true,get:()=>true});
+ p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
+ let top=0,shots=0;p.w.Element.prototype.getBoundingClientRect=()=>({width:300,height:180,top,left:0});p.w.Element.prototype.scrollIntoView=()=>{};p.w.Image=class{set src(v){setTimeout(()=>this.onerror?.())}};
+ const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_PREPARE')return {mode:'debugger'};if(m.type==='CAPTURE_TAB'){shots++;if(shots===1)top=40;return 'data:image/png;base64,abc'}return send(m)};
+ // 测试中的图片无法解码：第二次截图拿到画面后只会在解码时失败，而不是再报布局变化。
+ await assert.rejects(p.run('captureQuestion(questionId(getQuestionElements()[0],0),g)'),/无法解码/);
+ assert.equal(shots,2);
+ }finally{p.close()}
+});
+test('a foreground layout change still rejects without a second screenshot',async()=>{
+ const p=page(quiz);try {
+ p.run('var g={frameToken:AI_DOCUMENT,kind:"quiz",fingerprint:quizEnvelope().fingerprint}');
+ let top=0,shots=0;p.w.Element.prototype.getBoundingClientRect=()=>({width:300,height:180,top,left:0});p.w.Element.prototype.scrollIntoView=()=>{};p.w.Image=class{set src(v){setTimeout(()=>this.onerror?.())}};
+ const send=p.w.chrome.runtime.sendMessage;p.w.chrome.runtime.sendMessage=async m=>{if(m.type==='CAPTURE_PREPARE')return {mode:'visible'};if(m.type==='CAPTURE_TAB'){shots++;top+=40;return 'data:image/png;base64,abc'}return send(m)};
+ await assert.rejects(p.run('captureQuestion(questionId(getQuestionElements()[0],0),g)'),/布局变化/);
+ assert.equal(shots,1);
+ }finally{p.close()}
+});
