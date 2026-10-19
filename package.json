@@ -1,6 +1,6 @@
 {
   "name": "course-runner-extension-validation",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "仅用于扩展开发验证；加载扩展不需要 npm 安装",
   "scripts": {

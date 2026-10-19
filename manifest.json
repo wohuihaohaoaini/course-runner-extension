@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "课程流程助手",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "minimum_chrome_version": "111",
   "description": "悬浮窗课程流程助手：按任务点播放与换节，可开关的章节测验及视频弹题 AI 识别。",
   "icons": {
