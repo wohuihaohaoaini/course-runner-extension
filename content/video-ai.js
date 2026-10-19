@@ -106,7 +106,7 @@ async function fillAIVideoQuestion(answer, guard) {
     if (!option.row.isConnected) throw new Error('视频弹题已重新加载，停止填写');
     const selected = aiVideoOptions(aiVideoRoot()).find(o => o.id === option.id)?.selected;
     if (selected !== answer.choices.includes(option.id) && (option.type !== 'radio' || answer.choices.includes(option.id))) {
-      option.target.click();
+      pageClick(option.target);
       await wait(100);
     }
   }

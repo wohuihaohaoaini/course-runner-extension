@@ -8,7 +8,7 @@ const CourseLayout = (() => {
     const button = document.querySelector('#selector.posChapter_right .switchbtn');
     if (!button || button.classList.contains('switchbtn_cur') === collapseCourseSidebar) return;
     applying = true;
-    try { button.click(); } finally { applying = false; }
+    try { pageClick(button); } finally { applying = false; }
   }
   function init() {
     apply().catch(() => {});

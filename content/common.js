@@ -42,6 +42,19 @@ function findButton(pattern, root = document) {
     .find((element) => pattern.test(textOf(element) || element.value || "") && visible(element));
 }
 
+// 隔离环境里点到 javascript: 链接（或其中的子元素）会被扩展 CSP 拦截，交给页面主环境的
+// click-bridge.js 去点；其他元素以及点击桥不在时照常直接点击。
+const JAVASCRIPT_URL = /^\s*javascript:/i;
+function pageClick(element) {
+  const link = element.closest?.("a[href], area[href]");
+  if (link && JAVASCRIPT_URL.test(link.getAttribute("href"))) {
+    const view = element.ownerDocument?.defaultView;
+    const EventType = view?.CustomEvent || CustomEvent;
+    if (!element.dispatchEvent(new EventType("course-runner-click", { cancelable: true }))) return;
+  }
+  element.click();
+}
+
 function displayError(error) {
   const message = error?.message || String(error);
   if (/Could not establish connection|Receiving end does not exist|message port closed/i.test(message)) {

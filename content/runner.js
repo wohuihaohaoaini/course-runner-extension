@@ -236,7 +236,7 @@ const NAVIGATION_PHASES = {
     await saveTask(tabId, { phase: "enteringChapter", directoryEnteredAt: Date.now(), status: "正在进入未完成小节" });
     await ensureRunning(tabId);
     if (task.studyView && target.link.href) target.link.href = preserveStudyView(target.link.href, task.studyView);
-    target.link.click();
+    pageClick(target.link);
   },
 
   async enteringChapter(tabId, task) {
