@@ -6,18 +6,21 @@
 // 用法（需要有界面的浏览器，Linux 下用 xvfb-run）：
 //   CHROMIUM_PATH=/path/to/chromium xvfb-run -a node tests/e2e/background-flow.cjs
 // 可选：E2E_VISION=1 让第三道视频弹题和章节测验含加密字体，必须通过后台截图识题。
+// 可选：E2E_FOREGROUND=1 课程页留在前台（不切到其他标签页），同时模拟平台不停调整内嵌页高度，
+//       验证前台截图不会因与题目位置无关的 resize 事件作废。
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), https = require('node:https'), net = require('node:net');
 const assert = require('node:assert/strict');
 const { execFileSync, spawn } = require('node:child_process');
 
 const VISION = !!process.env.E2E_VISION;
+const FOREGROUND = !!process.env.E2E_FOREGROUND;
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'course-bg-e2e-'));
 const output = process.env.E2E_OUTPUT || temp;
 fs.mkdirSync(output, { recursive: true });
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 execFileSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=c=0x087b71:s=320x180:r=10:d=5', '-c:v', 'libvpx', '-an', path.join(temp, 'clip.webm')], { stdio: 'ignore' });
-const site = require('./course-site.cjs')({ clip: fs.readFileSync(path.join(temp, 'clip.webm')), vision: VISION, mutedVideo: false, pauseWhenHidden: true });
+const site = require('./course-site.cjs')({ clip: fs.readFileSync(path.join(temp, 'clip.webm')), vision: VISION, mutedVideo: false, pauseWhenHidden: true, frameHeightChurn: FOREGROUND });
 
 // 测试用扩展副本：只复制扩展运行需要的文件，内容与源码一致。
 const source = path.resolve(__dirname, '../..');
@@ -124,7 +127,7 @@ function connect(url) {
     if (!tabId) console.error('Test startup:', await evaluate(async () => ({ permissions: await chrome.permissions.getAll(), manifestPermissions: chrome.runtime.getManifest().permissions, tabs: (await chrome.tabs.query({})).map(t => ({ id:t.id, url:t.url, status:t.status })) })));
     assert.ok(tabId, 'course tab loaded');
     await evaluate(async () => {
-      await chrome.storage.local.set({ notify: false, muted: false, apiKey: 'local-test-key', aiEnabled: true, aiVideoEnabled: true, aiQuizEnabled: true,
+      await chrome.storage.local.set({ notify: false, muted: true, apiKey: 'local-test-key', aiEnabled: true, aiVideoEnabled: true, aiQuizEnabled: true,
         autoSubmit: true, videoAnswerMode: 'ai', allowBackgroundPlayback: true, allowBackgroundCapture: true, aiRevision: 'e2e' });
     });
     for (let i = 0; i < 20; i++) {
@@ -136,7 +139,7 @@ function connect(url) {
     assert.equal(started?.ok, true, JSON.stringify(started));
 
     // 用户在同一窗口打开并切换到另一个网页，课程页成为后台标签页。
-    const otherId = await evaluate(async id => {
+    const otherId = FOREGROUND ? null : await evaluate(async id => {
       const course = await chrome.tabs.get(id);
       globalThis.courseActivations = 0;
       chrome.tabs.onActivated.addListener(info => { if (info.tabId === id) globalThis.courseActivations++; });
@@ -145,7 +148,7 @@ function connect(url) {
     }, tabId);
     await sleep(1500);
 
-    const stats = { samples: 0, courseHidden: 0, otherActive: 0, protectedWhileRunning: 0, maxDebuggerClients: 0 };
+    const stats = { samples: 0, courseHidden: 0, otherActive: 0, protectedWhileRunning: 0, maxDebuggerClients: 0, tabMuted: 0, elementMuted: 0 };
     let task, previous = '';
     const deadline = Date.now() + 600000;
     while (Date.now() < deadline) {
@@ -156,13 +159,18 @@ function connect(url) {
         const tab = await chrome.tabs.get(id);
         const targets = await chrome.debugger.getTargets();
         const t = (await chrome.storage.local.get(`task:${id}`))[`task:${id}`];
+        // 静音开关开启：后台播放时应由标签页静音，视频元素本身不静音（否则页面被视为“无声”而被节流）。
+        const media = await chrome.scripting.executeScript({ target: { tabId: id, allFrames: true }, func: () => [...document.querySelectorAll('video')].some(v => v.muted) });
         return { hidden: hidden.result, otherActive: active?.id === other, discardable: tab.autoDiscardable,
+          tabMuted: tab.mutedInfo?.muted === true, elementMuted: media.some(r => r.result),
           attached: targets.filter(x => x.tabId === id && x.attached).length, task: t };
       }, tabId, otherId);
       task = sample.task;
       stats.samples++;
       if (sample.hidden) stats.courseHidden++;
       if (sample.otherActive) stats.otherActive++;
+      if (sample.tabMuted) stats.tabMuted++;
+      if (sample.elementMuted) stats.elementMuted++;
       if (task?.state === 'running' && sample.discardable === false) stats.protectedWhileRunning++;
       stats.maxDebuggerClients = Math.max(stats.maxDebuggerClients, sample.attached);
       if (task?.status !== previous) { previous = task?.status; console.log(`${task?.state}/${task?.phase}`, previous); }
@@ -197,15 +205,19 @@ function connect(url) {
       assert.ok(final.requests.flatMap(r => r.imageBytes).every(n => n > 1000), 'captured images are not empty');
       assert.ok(stats.maxDebuggerClients <= 1);
     }
-    assert.equal(stats.courseHidden, stats.samples, 'course page stayed in the background for the whole run');
-    assert.equal(stats.otherActive, stats.samples, 'the user\'s tab stayed active');
-    assert.equal(final.activations, 0, 'course tab was never activated');
+    if (!FOREGROUND) {
+      assert.equal(stats.courseHidden, stats.samples, 'course page stayed in the background for the whole run');
+      assert.equal(stats.otherActive, stats.samples, 'the user\'s tab stayed active');
+      assert.equal(final.activations, 0, 'course tab was never activated');
+    } else assert.equal(stats.courseHidden, 0, 'course page stayed in the foreground');
     assert.ok(stats.protectedWhileRunning > 0, 'course tab protected from discarding while running');
     assert.equal(final.discardable, originalDiscardable, 'tab discard setting restored after completion');
     assert.deepEqual(final.protectedTabs || {}, {});
     assert.equal(final.alarm, undefined, 'wake-up alarm cleared after completion');
     assert.equal(final.attached, 0, 'no debugger connection left behind');
-    const report = { status: 'passed', vision: VISION, stats, events, requests: final.requests.map(({ imageBytes, ...r }) => r) };
+    assert.equal(stats.tabMuted, stats.samples, 'mute switch applied as a tab mute');
+    assert.equal(stats.elementMuted, 0, 'video elements stay audible so the page counts as playing sound');
+    const report = { status: 'passed', vision: VISION, foreground: FOREGROUND, stats, events, requests: final.requests.map(({ imageBytes, ...r }) => r) };
     fs.writeFileSync(path.join(output, 'background-result.json'), JSON.stringify(report, null, 2));
     console.log('PASS', JSON.stringify(report));
   } finally {
