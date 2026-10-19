@@ -177,7 +177,7 @@ async function commandFrame(tabId, frameId, command, data) {
 // 需要用户处理时的桌面通知。同一标签页同一原因只保留一条，点击通知回到课程标签页。
 const NOTIFY_TITLES = {
   videoQuestion: "视频里出现了答题", face: "需要人脸识别", captcha: "需要输入验证码",
-  background: "课程需要回到前台", quiz: "有章节测验等你完成", paused: "视频被暂停了", done: "课程已完成", error: "运行停止了"
+  background: "课程需要回到前台", quiz: "有章节测验等你完成", paused: "视频被暂停了", skipped: "已跳过一个卡住的任务点", done: "课程已完成", error: "运行停止了"
 };
 
 async function notify(tabId, reason, message) {

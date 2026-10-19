@@ -145,7 +145,9 @@ const Panel = (() => {
     box.hidden = view.minimized; mini.hidden = !view.minimized; box.dataset.state = mini.dataset.state = state;
     mini.title = `课程流程助手：${STATE_TEXT[state]}（点击展开，按住拖动）`;
     const chip = root.querySelector('.chip'); chip.dataset.state = state; chip.textContent = STATE_TEXT[state] || '待启动';
-    const status = root.querySelector('.status'); status.textContent = task?.status || '打开课程学习页后开始。'; status.title = status.textContent;
+    // 等待用户处理时注明自动跳过的时间（见 content/stuck.js）。
+    const skipAt = state === 'waiting' && task.stuck?.until ? `（${new Date(task.stuck.until).toTimeString().slice(0, 5)} 前仍未解决将记入待办，先做下一个任务点）` : '';
+    const status = root.querySelector('.status'); status.textContent = task?.status ? task.status + skipAt : '打开课程学习页后开始。'; status.title = status.textContent;
     const chapter = root.querySelector('.chapter'); chapter.textContent = task?.chapterName ? `当前小节：${task.chapterName}` : ''; chapter.hidden = !task?.chapterName;
     const start = root.querySelector('[data-act=toggle]'); start.textContent = running ? '暂停' : '开始'; start.classList.toggle('primary', !running);
     const aiButton = root.querySelector('[data-act=ai]'); aiButton.textContent = `AI：${ai ? '开启' : '关闭'}`; aiButton.setAttribute('aria-pressed', String(ai));
