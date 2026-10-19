@@ -2,7 +2,7 @@
 // run-ai.cjs（Playwright 拦截）与 background-flow.cjs（本地 HTTPS 服务）共用，保证两条流程面对同一套页面。
 const {modernQuestion,wireModernChoices}=require('../fixtures/modern-quiz.cjs');
 const {videoQuestion}=require('../fixtures/video-quiz.cjs');
-module.exports=function createCourseSite({clip,vision=!!process.env.E2E_VISION,mutedVideo=true,pauseWhenHidden=false}={}){
+module.exports=function createCourseSite({clip,vision=!!process.env.E2E_VISION,mutedVideo=true,pauseWhenHidden=false,frameHeightChurn=false}={}){
 const finished = new Set();
 const events=[];
 const jobs = id => id === '7' ? [{id:'v1',type:'video'},{id:'v2',type:'video'},{id:'q',type:'quiz'}] : [{id:'v3',type:'video'}];
@@ -68,7 +68,7 @@ function respond(u){let body;
   if(u.pathname.includes('studentstudy'))body=topHTML();
   else if(u.pathname.includes('knowledge/cards'))body=cardsHTML(u.searchParams.get('chapter'));
   else if(u.pathname.includes('/video/'))body=videoHTML(u.searchParams.get('id'));
-  else if(u.pathname.includes('/modules/work/'))body='<iframe id="frame_content" src="/mooc-ans/work/dohomeworknew?jobid=q" style="border:0;width:650px;height:400px"></iframe><script>addEventListener("message",e=>{if(e.data.done)parent.postMessage(e.data,location.origin)})</script>';
+  else if(u.pathname.includes('/modules/work/'))body='<iframe id="frame_content" src="/mooc-ans/work/dohomeworknew?jobid=q" style="border:0;width:650px;height:400px"></iframe><script>addEventListener("message",e=>{if(e.data.done)parent.postMessage(e.data,location.origin)})'+(frameHeightChurn?';/* 模拟平台定时自适应内嵌页高度：题目不动，但内层窗口不断收到 resize */setInterval(()=>{const f=document.getElementById("frame_content");f.style.height=(f.style.height==="400px"?"402px":"400px")},50)':'')+'</script>';
   else if(u.pathname.includes('/work/dohomeworknew'))body=quizHTML();
   else if(u.pathname==='/clip.webm')return {status:200,contentType:'video/webm',body:clip};
   else if(u.pathname==='/done'){finished.add(u.searchParams.get('id'));body='ok'}

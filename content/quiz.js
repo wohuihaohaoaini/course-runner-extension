@@ -181,23 +181,18 @@ function aiVisualIdentity(root) {
   } catch { throw new Error('题目图像无法核对是否变化，请人工处理'); }
 }
 
+// 截图只认题目在顶层画面中的实际位置：内层框架改高度（平台定时自适应 iframe 高度）、目录或其他
+// 可滚动区域滚动都会派发 scroll / resize 事件，但不会移动题目，不能据此作废截图。
+// 位置按整数像素比较，亚像素抖动不算移动。
+function captureBoxSignature(box) {
+  return [box.x, box.y, box.width, box.height, box.viewportWidth, box.viewportHeight].map((value) => Math.round(value)).join(':');
+}
+
 async function captureStableViewport(root, guard, box) {
-  const signature = value => JSON.stringify(value);
-  const expected = signature(box);
+  const expected = captureBoxSignature(box);
   let changed = false, stopped = false, raf;
-  // 后台页面不绘制画面，滚动事件会延迟到截图强制绘制时才派发，不能据此判断布局变化；
-  // 此时只比较截图前后题目的实际位置。
-  const eventsReliable = document.hidden !== true;
-  const markChanged = () => { if (eventsReliable) changed = true; };
-  const windows = [];
-  for (let current = window;; current = current.parent) {
-    windows.push(current);
-    current.addEventListener('scroll', markChanged, true);
-    current.addEventListener('resize', markChanged);
-    if (current === current.top) break;
-  }
   const check = () => {
-    try { if (!root.isConnected || signature(topViewportRect(root)) !== expected) changed = true; }
+    try { if (!root.isConnected || captureBoxSignature(topViewportRect(root)) !== expected) changed = true; }
     catch { changed = true; }
     if (!stopped) raf = requestAnimationFrame(check);
   };
@@ -207,15 +202,12 @@ async function captureStableViewport(root, guard, box) {
     const shot = await chrome.runtime.sendMessage({ type: 'CAPTURE_TAB', guard, pageHidden: document.hidden === true });
     if (shot?.error) throw new Error(shot.error);
     await assertAICommand(guard);
-    if (changed || !root.isConnected || signature(topViewportRect(root)) !== expected) throw new Error('截图期间页面发生滚动或布局变化，请保持页面稳定后重新开始');
+    check();
+    if (changed) throw new Error('截图期间题目位置发生变化（布局变化），请保持页面稳定后重新开始');
     return shot;
   } finally {
     stopped = true;
     cancelAnimationFrame(raf);
-    for (const current of windows) {
-      current.removeEventListener('scroll', markChanged, true);
-      current.removeEventListener('resize', markChanged);
-    }
   }
 }
 
@@ -276,15 +268,18 @@ async function captureVideoQuestion(guard) {
 }
 
 // 后台标签页的计时器至少 1 秒才触发一次，稳定判断改按采样次数并放宽总时长。
+const CAPTURE_LAYOUT_ATTEMPTS = 3;
 async function captureElement(root, id, minHeight = 60, guard, verifyLayout) {
   const prepared = await chrome.runtime.sendMessage({ type: 'CAPTURE_PREPARE', guard, pageHidden: document.hidden === true });
   if (prepared?.error) throw new Error(prepared.error);
   // 同一轮识题的多张截图共用一个调试连接，由识题流程在全部截图结束后释放（到期也会自动释放）。
-  try { return await captureMeasuredElement(root, id, minHeight, guard, verifyLayout); }
-  catch (error) {
-    // 后台标签页的尺寸变化（如调试提示条）可能要到第一次正式截图时才生效：重新测量位置后再截一次。
-    if (document.hidden !== true || !/布局变化|位置未稳定/.test(error?.message || '')) throw error;
-    return captureMeasuredElement(root, id, minHeight, guard, verifyLayout);
+  // 截图期间题目移动（后台标签页第一次截图时尺寸变化、调试提示条出现、平台自适应高度、图片加载完成）
+  // 时重新测量位置再截，前台和后台一样处理；连续多次都在移动才放弃。
+  for (let attempt = 1; ; attempt++) {
+    try { return await captureMeasuredElement(root, id, minHeight, guard, verifyLayout); }
+    catch (error) {
+      if (attempt >= CAPTURE_LAYOUT_ATTEMPTS || !/布局变化|位置未稳定/.test(error?.message || '')) throw error;
+    }
   }
 }
 
@@ -299,7 +294,7 @@ async function captureMeasuredElement(root, id, minHeight, guard, verifyLayout) 
     await wait(150);
     try { box = topViewportRect(root); boundsError = null; }
     catch (error) { boundsError = error; continue; }
-    const signature = [box.x, box.y, box.width, box.height, box.viewportWidth, box.viewportHeight].map((value) => Math.round(value)).join(":");
+    const signature = captureBoxSignature(box);
     stable = signature === previous ? stable + 1 : 0;
     previous = signature;
     if (stable >= 2) break;

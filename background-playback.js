@@ -3,6 +3,8 @@
 // - 用浏览器的定时唤醒（alarms）补充页面计时器：后台页面的计时器会被节流，唤醒只请求页面执行一轮检查，
 //   页面内与自身定时器互斥，不会重复识题、提交或换节。
 // - 页面可见性由 content/visibility-shim.js 处理（播放器不再因切屏暂停）；不伪造心跳或学习时长。
+// - 静音改为标签页静音（content/mute.js 此时不再静音视频元素）：浏览器只对“正在出声”的后台页面
+//   免除计时器重度节流和节能冻结，标签页静音不影响这一判断，视频元素静音会。只撤销本扩展加上的静音。
 const BackgroundPlayback = (() => {
   const ALARM = 'course-runner-background';
   const KEY = 'backgroundPlaybackTabs';
@@ -10,9 +12,23 @@ const BackgroundPlayback = (() => {
   let writes = Promise.resolve();
   const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
+  async function syncTabMute(tabs, stored) {
+    const wanted = stored.allowBackgroundPlayback === true && stored.muted === true;
+    for (const tab of tabs) {
+      if (!COURSE_URL.test(tab.url || '')) continue;
+      const info = tab.mutedInfo || {};
+      const ours = info.muted === true && info.reason === 'extension' && info.extensionId === chrome.runtime.id;
+      try {
+        if (wanted && info.muted !== true) await chrome.tabs.update(tab.id, { muted: true });
+        else if (!wanted && ours) await chrome.tabs.update(tab.id, { muted: false });
+      } catch { /* 标签页可能正在关闭，下次检查再处理。 */ }
+    }
+  }
+
   async function reconcile(pulse = false) {
     const stored = await chrome.storage.local.get(null);
     const tabs = await chrome.tabs.query({});
+    await syncTabMute(tabs, stored);
     const previous = stored[KEY] || {};
     const next = {};
     const running = [];
@@ -59,7 +75,7 @@ const BackgroundPlayback = (() => {
   function init() {
     if (!chrome.alarms || !chrome.tabs?.query) return;
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === 'local' && ('allowBackgroundPlayback' in changes ||
+      if (area === 'local' && ('allowBackgroundPlayback' in changes || 'muted' in changes ||
           Object.entries(changes).some(([key, change]) => key.startsWith('task:') &&
             (change.oldValue?.state !== change.newValue?.state || change.oldValue?.runId !== change.newValue?.runId)))) sync().catch(() => {});
     });

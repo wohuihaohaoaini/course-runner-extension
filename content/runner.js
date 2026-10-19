@@ -5,7 +5,8 @@
 //   directory → enteringChapter → page ⇄ waiting → switchingChapter → page ...
 //   page：读本页任务点清单，逐个处理未完成的（视频 / 音频 / 文档），测验按设置跳过或等用户做；
 //         本标签做完换下一个标签，整节做完按跳转模式换节。
-//   waiting：视频弹题、人脸识别、验证码、测验、视频被未知原因暂停时等用户处理，处理完自动回到 page。
+//   waiting：视频弹题、人脸识别、验证码、测验、视频被未知原因暂停时等用户处理，处理完自动回到 page；
+//            长时间没解决时由 StuckGuard（content/stuck.js）记入待办并跳到下一个任务点。
 //   returningDirectory：读不到左侧目录时，退回课程目录页找下一节（0.1.x 的做法，作为兜底）。
 
 let loopActive = false;
@@ -95,7 +96,7 @@ async function pruneTodos(ctx) {
 // ---- 计时字段 ----
 function jobReset() {
   return {
-    ai: null, aiAttempts: 0, captureRetries: 0, videoTrial: null, waitingSince: null, jobStartedAt: Date.now(), lastVideoTime: 0, lastProgressAt: null, videoEndedAt: null, playRetries: 0,
+    ai: null, aiAttempts: 0, captureRetries: 0, videoTrial: null, waitingSince: null, stuck: null, jobStartedAt: Date.now(), lastVideoTime: 0, lastProgressAt: null, videoEndedAt: null, playRetries: 0,
     initialPlayAttemptedAt: null, initialPlayWaitingAt: null, jobRevealedAt: null, mediaReloadedAt: null,
     documentAtBottomAt: null, questionContinueClickedAt: null, questionClosedAt: null,
     questionResumeTime: null, questionResumePlayAt: null, questionResumeTries: 0, questionResultAt: null
@@ -120,6 +121,10 @@ function summarizeFrames(frames, task, aiQuiz = false) {
   const jobs = cards.flatMap((frame) => frame.jobs.map((job) => ({ ...job, frameId: frame.frameId })));
   const chapter = (main?.catalog || []).find((item) => item.id === main?.chapterId) || (main?.chapterId ? { id: main.chapterId, name: "" } : null);
   const skipped = task.skippedJobs || [];
+  // 已跳过的视频留下的弹题不再算待处理，否则会把运行器拉回那个任务点。
+  const skippedMedia = (frame) => skipped.includes(frame.jobId) ||
+    (!frame.jobId && jobs.some((job) => skipped.includes(job.id) && mediaFrameFor(job, { jobs, media: frames.filter((f) => f.active && f.mediaPage) })?.frameId === frame.frameId));
+  const questionFrames = frames.filter((frame) => frame.active && frame.videoQuestionSurface && !skippedMedia(frame));
   return {
     frames,
     main,
@@ -128,8 +133,7 @@ function summarizeFrames(frames, task, aiQuiz = false) {
     jobs,
     pending: jobs.filter((job) => job.isJob && !job.finished && !skipped.includes(job.id)),
     media: frames.filter((frame) => frame.active && frame.mediaPage),
-    questionFrame: frames.find(frame => frame.active && frame.videoQuestionSurface && frame.jobId === task.currentJobId) ||
-      frames.find(frame => frame.active && frame.videoQuestionSurface),
+    questionFrame: questionFrames.find(frame => frame.jobId === task.currentJobId) || questionFrames[0],
     treeTask: main?.treeTask,
     aiQuiz
   };
@@ -305,8 +309,9 @@ const WAIT_STATUS = {
   face: "需要人脸识别：请用手机扫码完成识别，完成后插件自动继续",
   videoQuestion: "视频中出现答题：请在视频里自己选择答案并提交，插件会在弹题关闭后自动继续播放",
   quiz: "本节有章节测验：请你自己完成并提交，平台确认完成后插件自动继续",
-  background: "后台播放未能继续（浏览器或平台可能暂停了后台视频），当前小节已保留；回到课程页后自动重新检查，检测到进度也会自动继续",
-  paused: "视频多次暂停且未恢复进度，已留在当前小节；请保持课程页在前台并手动播放，检测到进度后自动继续"
+  background: "后台播放未能继续（浏览器或平台可能暂停了后台视频）；回到课程页后自动重新检查，检测到进度也会自动继续",
+  paused: "视频多次暂停且未恢复进度；请保持课程页在前台并手动播放，检测到进度后自动继续",
+  pausedHidden: "课程页在后台，且没有开启“允许后台播放”，播放器会自动暂停视频；请回到课程页，或在设置里开启“允许后台播放”"
 };
 
 function attentionReason(ctx) {
@@ -327,7 +332,8 @@ async function videoManualStatus() {
 
 async function enterWaiting(tabId, task, reason, extra = {}) {
   const key = `${reason}:${task.activeChapterId}:${task.currentJobId || ""}`;
-  const status = reason === 'videoQuestion' ? await videoManualStatus() : WAIT_STATUS[reason];
+  const status = reason === 'videoQuestion' ? await videoManualStatus() :
+    reason === 'paused' && document.hidden === true ? WAIT_STATUS.pausedHidden : WAIT_STATUS[reason];
   await saveTask(tabId, { ...extra, phase: "waiting", waitReason: reason, waitingSince: Date.now(),
     questionContinueClickedAt: null, questionClosedAt: null, questionResumePlayAt: null, questionResumeTries: 0, notifiedKey: key, status });
   if (task.notifiedKey !== key) notifyUser(reason, status);
@@ -349,10 +355,12 @@ function mediaFrameFor(job, ctx) {
   return ctx.media[mediaJobs.findIndex((item) => item.id === job.id)] || null;
 }
 
-async function skipJob(tabId, task, ctx, job, reason, status) {
+// aiTried：AI 已经试过的测验，AI 开着时也不再拉回来重做（见 tick）。
+async function skipJob(tabId, task, ctx, job, reason, status, { aiTried = false } = {}) {
   await addTodo(ctx.chapter, job, reason);
-  return saveTask(tabId, { ...jobReset(), currentJobId: null,
-    skippedJobs: [...new Set([...(task.skippedJobs || []), job.id])], status });
+  return saveTask(tabId, { ...jobReset(), phase: "page", waitReason: null, currentJobId: null,
+    skippedJobs: [...new Set([...(task.skippedJobs || []), job.id])],
+    ...(aiTried ? { aiSkippedJobs: [...new Set([...(task.aiSkippedJobs || []), job.id])] } : {}), status });
 }
 
 // 跳过只记录未完成并正常换节，不修改平台完成标记。
@@ -750,6 +758,8 @@ async function tick(tabId, task) {
   }
   // 换节期间旧弹题可能还在 DOM 中，不能把它重新当成待处理题。
   if (task.phase === 'switchingChapter') return CHAPTER_PHASES.switchingChapter(tabId, task, ctx);
+  // 等用户处理太久：记入待办、跳到下一个任务点。放在 AI / 试答分支之前，它们在后台等待时会提前返回。
+  if (await StuckGuard.check(tabId, task, ctx)) return;
   if (reason === 'videoQuestion') {
     if (await VideoTrialFlow.maybeVideo(tabId, task, ctx)) return;
     if (await AIFlow.maybeVideo(tabId, task, ctx)) return;

@@ -52,6 +52,7 @@
         "content/video-ai.js",
         "content/ai-flow.js",
         "content/video-trial.js",
+        "content/stuck.js",
         "content/commands.js",
         "content/runner.js",
         "content/layout.js",
