@@ -64,7 +64,7 @@ async function retryAI(tabId, key, previous) {
   await chrome.runtime.sendMessage({ type: 'CANCEL_AI' });
   const latest = (await chrome.storage.local.get(key))[key];
   if (latest?.runId !== previous.runId || latest?.state !== 'running') throw new Error('运行状态已变化，请重新开始');
-  await saveTask(tabId, { phase: 'page', ai: null, aiAttempts: 0, waitReason: null, questionClosedAt: null, questionContinueClickedAt: null,
+  await saveTask(tabId, { phase: 'page', ai: null, aiAttempts: 0, waitReason: null, stuck: null, questionClosedAt: null, questionContinueClickedAt: null,
     status: '正在重新定位并读取当前题目' });
   startLoop(tabId);
   return { ok: true };
