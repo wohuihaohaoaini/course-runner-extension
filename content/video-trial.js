@@ -30,7 +30,7 @@ async function submitVideoTrial({ choice, token, guard }) {
     throw new Error('当前题目不允许继续试答');
   }
   const root = aiVideoRoot(), option = aiVideoOptions(root).find(o => o.id === choice);
-  if (!option.selected) option.target.click();
+  if (!option.selected) pageClick(option.target);
   await wait(100);
   await assertVideoTrialCommand(guard);
   verifyAIVideoSelection({ choices: [choice] });
@@ -64,7 +64,7 @@ async function submitVideoTrial({ choice, token, guard }) {
   receipt.observer = new MutationObserver(observe);
   trialReceipt = receipt;
   receipt.observer.observe(root, { subtree: true, attributes: true, childList: true, characterData: true });
-  button.click();
+  pageClick(button);
   observe();
   return { clicked: true };
 }

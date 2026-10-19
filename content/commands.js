@@ -3,7 +3,7 @@
 
 const clickOrThrow = (element, message) => {
   if (!element) throw new Error(message);
-  element.click();
+  pageClick(element);
   return { clicked: true };
 };
 
@@ -22,7 +22,7 @@ const FRAME_COMMANDS = {
     } catch (error) {
       const button = document.querySelector(".vjs-big-play-button");
       if (!visible(button)) throw error;
-      button.click();
+      pageClick(button);
       await wait(500);
       if (video.paused) throw new Error("浏览器未允许自动播放，请手动点击视频中央播放按钮后继续（开启静音可减少这种情况）");
     } finally { clearTimeout(playTimer); }
@@ -105,7 +105,7 @@ const FRAME_COMMANDS = {
         const choice = options.find((option) => answer.choices.includes(option.id));
         if (!choice || answer.choices.length !== 1) throw new Error(`题目 ${id} 的单选答案不合法`);
         if (!choice.selected) {
-          choice.target.click();
+          pageClick(choice.target);
           await wait(1000);
         }
         continue;
@@ -114,7 +114,7 @@ const FRAME_COMMANDS = {
         await assertAICommand(data.guard);
         const desired = answer.choices.includes(option.id);
         if (desired !== option.selected) {
-          option.target.click();
+          pageClick(option.target);
           await wait(1000);
         }
       }
