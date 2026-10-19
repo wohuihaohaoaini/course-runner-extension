@@ -61,10 +61,10 @@ function connect(url) {
   const chrome = spawn(process.env.CHROMIUM_PATH || 'chromium', [
     `--remote-debugging-port=${debugPort}`, `--user-data-dir=${path.join(temp, 'profile')}`,
     `--disable-extensions-except=${extension}`, `--load-extension=${extension}`,
-    `--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1:${sitePort}`, '--ignore-certificate-errors', '--no-proxy-server',
+    `--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1`, '--ignore-certificate-errors', '--no-proxy-server',
     '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--no-default-browser-check', '--window-size=1300,1000',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-    'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=7&courseId=8&clazzid=9'
+    `https://mooc1.chaoxing.com:${sitePort}/mycourse/studentstudy?chapterId=7&courseId=8&clazzid=9`
   ], { stdio: 'ignore' });
   let browser;
   try {
@@ -72,14 +72,24 @@ function connect(url) {
     for (let i = 0; i < 60 && !version; i++) { await sleep(500); version = await fetch(`http://127.0.0.1:${debugPort}/json/version`).then(r => r.json()).catch(() => null); }
     assert.ok(version, 'browser started');
     browser = connect(version.webSocketDebuggerUrl);
-    let worker;
+    let worker, sessionId;
     for (let i = 0; i < 60 && !worker; i++) {
       const { targetInfos } = await browser.send('Target.getTargets');
-      worker = targetInfos.find(t => t.type === 'service_worker' && t.url.startsWith('chrome-extension://') && t.url.endsWith('/background.js'));
+      const candidates = targetInfos.filter(t => t.type === 'service_worker' && t.url.startsWith('chrome-extension://') && t.url.endsWith('/background.js'));
+      for (const candidate of candidates) {
+        const attached = await browser.send('Target.attachToTarget', { targetId: candidate.targetId, flatten: true });
+        const manifest = await browser.send('Runtime.evaluate', { expression: 'chrome.runtime.getManifest()', returnByValue: true }, attached.sessionId);
+        // 新版 Chromium 还包含同名 background.js 的内置扩展，必须确认真正的测试对象。
+        if (manifest.result?.value?.name === '课程流程助手') {
+          worker = candidate;
+          sessionId = attached.sessionId;
+          break;
+        }
+        await browser.send('Target.detachFromTarget', { sessionId: attached.sessionId });
+      }
       if (!worker) await sleep(500);
     }
-    assert.ok(worker, 'extension service worker');
-    const { sessionId } = await browser.send('Target.attachToTarget', { targetId: worker.targetId, flatten: true });
+    assert.ok(worker, 'course runner extension service worker');
     const evaluate = async (fn, ...args) => {
       const result = await browser.send('Runtime.evaluate', { expression: `(${fn})(...${JSON.stringify(args)})`, awaitPromise: true, returnByValue: true }, sessionId);
       if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
@@ -111,6 +121,7 @@ function connect(url) {
       tabId = await evaluate(async () => (await chrome.tabs.query({})).find(t => t.url?.includes('studentstudy') && t.status === 'complete')?.id);
       if (!tabId) await sleep(500);
     }
+    if (!tabId) console.error('Test startup:', await evaluate(async () => ({ permissions: await chrome.permissions.getAll(), manifestPermissions: chrome.runtime.getManifest().permissions, tabs: (await chrome.tabs.query({})).map(t => ({ id:t.id, url:t.url, status:t.status })) })));
     assert.ok(tabId, 'course tab loaded');
     await evaluate(async () => {
       await chrome.storage.local.set({ notify: false, muted: false, apiKey: 'local-test-key', aiEnabled: true, aiVideoEnabled: true, aiQuizEnabled: true,
@@ -125,13 +136,13 @@ function connect(url) {
     assert.equal(started?.ok, true, JSON.stringify(started));
 
     // 用户在同一窗口打开并切换到另一个网页，课程页成为后台标签页。
-    const otherId = await evaluate(async id => {
+    const otherId = await evaluate(async (id, port) => {
       const course = await chrome.tabs.get(id);
       globalThis.courseActivations = 0;
       chrome.tabs.onActivated.addListener(info => { if (info.tabId === id) globalThis.courseActivations++; });
-      const other = await chrome.tabs.create({ windowId: course.windowId, url: 'https://mooc1.chaoxing.com/other-site', active: true });
+      const other = await chrome.tabs.create({ windowId: course.windowId, url: `https://mooc1.chaoxing.com:${port}/other-site`, active: true });
       return other.id;
-    }, tabId);
+    }, tabId, sitePort);
     await sleep(1500);
 
     const stats = { samples: 0, courseHidden: 0, otherActive: 0, protectedWhileRunning: 0, maxDebuggerClients: 0 };

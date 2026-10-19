@@ -141,7 +141,7 @@ $("allowBackgroundPlayback").addEventListener("change", async () => {
   const enabled = $("allowBackgroundPlayback").checked;
   try {
     await chrome.storage.local.set({ allowBackgroundPlayback: enabled });
-    // 后台截图依赖后台播放；关闭后台播放时一并关闭截图并撤销权限。
+    // 后台截图依赖后台播放；关闭后台播放时一并关闭截图使用。
     if (!enabled && $("allowBackgroundCapture").checked) await disableBackgroundCapture();
     $("message").textContent = enabled ? "已允许后台播放" : "已关闭后台播放，课程页需保持在前台";
   } catch (error) { showError(error); }
