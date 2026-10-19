@@ -61,10 +61,10 @@ function connect(url) {
   const chrome = spawn(process.env.CHROMIUM_PATH || 'chromium', [
     `--remote-debugging-port=${debugPort}`, `--user-data-dir=${path.join(temp, 'profile')}`,
     `--disable-extensions-except=${extension}`, `--load-extension=${extension}`,
-    `--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1`, '--ignore-certificate-errors', '--no-proxy-server',
+    `--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1:${sitePort}`, '--ignore-certificate-errors', '--no-proxy-server',
     '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--no-default-browser-check', '--window-size=1300,1000',
     ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-    `https://mooc1.chaoxing.com:${sitePort}/mycourse/studentstudy?chapterId=7&courseId=8&clazzid=9`
+    'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=7&courseId=8&clazzid=9'
   ], { stdio: 'ignore' });
   let browser;
   try {
@@ -136,13 +136,13 @@ function connect(url) {
     assert.equal(started?.ok, true, JSON.stringify(started));
 
     // 用户在同一窗口打开并切换到另一个网页，课程页成为后台标签页。
-    const otherId = await evaluate(async (id, port) => {
+    const otherId = await evaluate(async id => {
       const course = await chrome.tabs.get(id);
       globalThis.courseActivations = 0;
       chrome.tabs.onActivated.addListener(info => { if (info.tabId === id) globalThis.courseActivations++; });
-      const other = await chrome.tabs.create({ windowId: course.windowId, url: `https://mooc1.chaoxing.com:${port}/other-site`, active: true });
+      const other = await chrome.tabs.create({ windowId: course.windowId, url: 'https://mooc1.chaoxing.com/other-site', active: true });
       return other.id;
-    }, tabId, sitePort);
+    }, tabId);
     await sleep(1500);
 
     const stats = { samples: 0, courseHidden: 0, otherActive: 0, protectedWhileRunning: 0, maxDebuggerClients: 0 };
