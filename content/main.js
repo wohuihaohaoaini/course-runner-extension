@@ -60,7 +60,7 @@ async function pauseTask(key, previous) {
 }
 
 async function retryAI(tabId, key, previous) {
-  if (previous?.state !== 'running' || previous?.ai?.stage !== 'error') throw new Error('当前没有可重新读取的 AI 题目');
+  if (previous?.state !== 'running' || !['error', 'bank-miss'].includes(previous?.ai?.stage)) throw new Error('当前没有可重新读取的题目');
   await chrome.runtime.sendMessage({ type: 'CANCEL_AI' });
   const latest = (await chrome.storage.local.get(key))[key];
   if (latest?.runId !== previous.runId || latest?.state !== 'running') throw new Error('运行状态已变化，请重新开始');

@@ -45,8 +45,8 @@ const Panel = (() => {
     .act.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
     .act.primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
     .act[aria-pressed=true] { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
-    .tools { display: flex; align-items: center; gap: 16px; padding: 0 12px 10px; flex: none; }
-    .fold { border: 0; background: none; padding: 4px 0; color: #2563eb; font-size: 12px; }
+    .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0 12px; padding: 0 12px 10px; flex: none; }
+    .fold { border: 0; background: none; padding: 4px 0; color: #2563eb; font-size: 12px; white-space: nowrap; }
     .fold:hover { color: #1d4ed8; }
     .retry { color: #92400e; margin: 0 12px 8px; padding: 5px 8px; border: 1px solid #f0d49c; border-radius: 6px; background: #fffbeb; font-size: 12px; }
     .details-content { min-height: 0; max-height: 180px; overflow: auto; overscroll-behavior: contain;
@@ -127,7 +127,7 @@ const Panel = (() => {
     if (!root) return;
     const version = ++renderVersion;
     const key = `task:${tabId}`;
-    const s = await chrome.storage.local.get([key, 'todos', 'muted', 'panelView', 'aiEnabled', 'aiVideoEnabled', 'aiQuizEnabled', 'videoAnswerMode']);
+    const s = await chrome.storage.local.get([key, 'todos', 'muted', 'panelView', 'aiEnabled', 'aiVideoEnabled', 'aiQuizEnabled', 'videoAnswerMode', 'questionBankEnabled', 'questionBankCount']);
     if (version !== renderVersion) return;
     if (pointerHeld || dragging) { renderDeferred = true; return; }
     if (!viewLoaded) {
@@ -152,9 +152,15 @@ const Panel = (() => {
     const start = root.querySelector('[data-act=toggle]'); start.textContent = running ? '暂停' : '开始'; start.classList.toggle('primary', !running);
     const aiButton = root.querySelector('[data-act=ai]'); aiButton.textContent = `AI：${ai ? '开启' : '关闭'}`; aiButton.setAttribute('aria-pressed', String(ai));
     const mute = root.querySelector('[data-act=mute]'); mute.textContent = s.muted === true ? '🔇 已静音' : '🔊 静音'; mute.setAttribute('aria-pressed', String(s.muted === true));
-    const videoMode = s.videoAnswerMode === 'trial' ? '单选顺序试答' : s.videoAnswerMode === 'manual' ? '手动' : ai && s.aiVideoEnabled !== false ? 'AI' : '手动';
-    root.querySelector('.ai-caption').textContent = `视频弹题：${videoMode} · 章节测验：${ai && s.aiQuizEnabled !== false ? 'AI' : '手动/跳过'}`;
-    root.querySelector('[data-act=retry]').hidden = !(running && task?.ai?.stage === 'error');
+    const bank = s.questionBankEnabled === true;
+    const automaticLabel = kind => bank ? ai && s[kind] !== false ? '题库 / AI' : '题库' : ai && s[kind] !== false ? 'AI' : '手动';
+    const videoMode = s.videoAnswerMode === 'trial' ? '单选顺序试答' : s.videoAnswerMode === 'manual' ? '手动' : automaticLabel('aiVideoEnabled');
+    root.querySelector('.ai-caption').textContent = `视频弹题：${videoMode} · 章节测验：${automaticLabel('aiQuizEnabled')}`;
+    root.querySelector('[data-act=bank]').textContent = `题库 ${bank ? '已开启' : '未开启'}（${s.questionBankCount || 0}）`;
+    const answerCaption = root.querySelector('.answer-caption');
+    answerCaption.hidden = !(bank && task?.ai?.total);
+    answerCaption.textContent = answerCaption.hidden ? '' : `本次题库命中 ${task.ai.bankHits}/${task.ai.total} 题`;
+    root.querySelector('[data-act=retry]').hidden = !(running && ['error', 'bank-miss'].includes(task?.ai?.stage));
     for (const [section, label] of [['todo', `待你处理（${todos.length}）`], ['log', '运行记录']]) {
       const button = root.querySelector(`[data-act=${section}]`); button.textContent = `${label} ${view.section === section ? '▴' : '▾'}`; button.setAttribute('aria-expanded', String(view.section === section));
       root.querySelector(`[data-section=${section}]`).hidden = view.section !== section;
@@ -179,6 +185,7 @@ const Panel = (() => {
         if (result?.error) throw new Error(result.error); return render();
       }
       if (action === 'settings') { const result = await chrome.runtime.sendMessage({ type: 'OPEN_AI_SETTINGS' }); if (result?.error) throw new Error(result.error); return; }
+      if (action === 'bank') { const result = await chrome.runtime.sendMessage({ type: 'OPEN_QUESTION_BANK' }); if (result?.error) throw new Error(result.error); return; }
       if (action === 'retry' || action === 'toggle') {
         const type = action === 'retry' ? 'RETRY_AI' : currentTask?.state === 'running' ? 'PAUSE' : 'START';
         const result = await handleStartOrPause(type); if (result?.error) throw new Error(result.error);
@@ -193,9 +200,9 @@ const Panel = (() => {
     root.innerHTML = `<style>${STYLE}</style><div class="drag-shield" hidden></div>
       <div class="box" role="region" aria-label="课程流程助手"><header><b>课程流程助手</b><span class="chip"></span><button class="icon-btn" data-act="min" aria-label="收起悬浮窗" title="收起">−</button></header>
       <div class="body"><p class="status" role="status"></p><div class="chapter"></div><div class="jobs"></div>
-      <div class="actions"><button class="act primary" data-act="toggle">开始</button><button class="act" data-act="mute" aria-pressed="false">🔊 静音</button></div><div class="actions"><button class="act" data-act="ai" aria-pressed="false">AI：关闭</button><button class="act" data-act="settings">AI 设置</button></div><div class="ai-caption"></div></div>
+      <div class="actions"><button class="act primary" data-act="toggle">开始</button><button class="act" data-act="mute" aria-pressed="false">🔊 静音</button></div><div class="actions"><button class="act" data-act="ai" aria-pressed="false">AI：关闭</button><button class="act" data-act="settings">AI 设置</button></div><div class="ai-caption"></div><div class="ai-caption answer-caption"></div></div>
       <button class="retry" data-act="retry" hidden>重新读取当前题目</button>
-      <div class="tools"><button class="fold" data-act="todo">待你处理</button><button class="fold" data-act="log">记录</button></div>
+      <div class="tools"><button class="fold" data-act="todo">待你处理</button><button class="fold" data-act="log">记录</button><button class="fold" data-act="bank">题库</button></div>
       <div class="details-content" hidden><section class="todo" data-section="todo" hidden></section><section class="log" data-section="log" hidden></section></div></div>
       <button class="mini" aria-label="展开课程流程助手" hidden>课</button>`;
     root.querySelectorAll('[data-act]').forEach(button => button.addEventListener('click', () => act(button.dataset.act)));
@@ -209,7 +216,7 @@ const Panel = (() => {
     addEventListener('pointerup', release, true); addEventListener('pointercancel', release, true); addEventListener('blur', release);
     let pending;
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || ![`task:${tabId}`, 'todos', 'muted', 'aiEnabled', 'aiVideoEnabled', 'aiQuizEnabled', 'videoAnswerMode'].some(k => changes[k])) return;
+      if (area !== 'local' || ![`task:${tabId}`, 'todos', 'muted', 'aiEnabled', 'aiVideoEnabled', 'aiQuizEnabled', 'videoAnswerMode', 'questionBankEnabled', 'questionBankCount'].some(k => changes[k])) return;
       clearTimeout(pending); pending = setTimeout(render, 100);
     });
     addEventListener('resize', () => { if (!dragging) place(view.minimized ? root.querySelector('.mini') : root.querySelector('.box')); });

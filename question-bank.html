@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>本地题库 · 课程流程助手</title>
+  <link rel="stylesheet" href="question-bank.css">
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">课程流程助手</p><h1>本地题库</h1><p>录入题目与答案，在课程中直接匹配作答，无需 AI 或接口密钥。</p></div>
+      <label class="switch"><input id="enabled" type="checkbox"> 启用题库答题</label></header>
+    <p id="message" role="status" aria-live="polite"></p>
+    <div class="layout">
+      <div class="library card">
+        <div class="toolbar"><h2>已录入 <span id="total">0</span> 题</h2><div class="buttons"><button id="showImport">导入题库</button><button id="newEntry" class="primary">录入新题</button></div></div>
+        <div class="filters"><input id="search" type="search" placeholder="搜索题干或选项" aria-label="搜索题目"><select id="filter" aria-label="按题型筛选"><option value="">全部题型</option><option value="single">单选</option><option value="multiple">多选</option><option value="judgment">判断</option><option value="fill">填空</option></select></div>
+        <div id="entries"></div>
+        <div class="pagination"><button id="previous">上一页</button><span id="pageInfo"></span><button id="next">下一页</button></div>
+        <details class="transfer" id="importBox"><summary>导入与导出</summary>
+          <p class="hint">使用 JSON 模板批量录入。按题干、题型和选项内容去重；同题答案冲突会拒绝整次导入，原题库保留。最多 2000 题、2 MB。</p>
+          <div class="buttons"><button id="chooseFile">导入 JSON 文件</button><button id="template">下载模板</button><button id="export">导出题库</button></div>
+          <input id="file" type="file" accept=".json,application/json" hidden>
+          <label for="importText">也可以粘贴 JSON</label><textarea id="importText" rows="5" placeholder='{"questions": [{"type": "single", "stem": "题干", "options": ["选项一", "选项二"], "choices": ["A"]}]}'></textarea><button id="importTextButton">导入粘贴内容</button>
+        </details>
+      </div>
+      <aside>
+        <form id="editor" class="card">
+          <h2 id="editorTitle">录入新题</h2><input id="entryId" type="hidden">
+          <label for="type">题型</label><select id="type"><option value="single">单选题</option><option value="multiple">多选题</option><option value="judgment">判断题</option><option value="fill">填空题</option></select>
+          <label for="stem">题干</label><textarea id="stem" rows="4" maxlength="3000" required placeholder="输入完整题干，无需题号和题型标签"></textarea>
+          <div id="optionsBox"><label for="options">选项（每行一个）</label><textarea id="options" rows="5" placeholder="A. 选项一&#10;B. 选项二"></textarea></div>
+          <label for="answer" id="answerLabel">答案编号</label><textarea id="answer" rows="2" required placeholder="单选：A；多选：A,C"></textarea><p class="hint" id="answerHint">选项编号可以省略，将按 A、B、C… 自动编号。匹配时会按选项内容对应页面编号。</p>
+          <div class="buttons"><button type="submit" class="primary" id="save">保存题目</button><button type="button" id="cancel">取消编辑</button></div>
+        </form>
+        <div class="card guide"><h2>在课程中使用</h2><ol><li>录入或导入题目，然后启用题库答题。</li><li>视频弹题选择“题库优先 / AI 作答”；关闭 AI 总开关即可只用题库。</li><li>回到课程页点击“开始”。章节测验默认填写后由你检查并提交，也可另开自动提交。</li></ol><p class="hint">题干、题型和完整选项匹配才会填写。未命中、答案冲突、图片或加密题会提示补题；若已开启对应 AI 分项，则只将未命中题目交给 AI。题库保存在本机，直接匹配时不会发送到网络。</p></div>
+      </aside>
+    </div>
+  </main>
+  <script src="question-bank.js"></script>
+</body>
+</html>

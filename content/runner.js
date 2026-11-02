@@ -325,6 +325,7 @@ async function videoManualStatus() {
   const options = await aiOptions();
   if (options.videoMode === 'trial') return '视频单选顺序试答已开启，不需要开启 AI';
   if (options.videoMode === 'manual') return '视频弹题已设为手动，完成后自动继续';
+  if (options.bank) return '本地题库已开启，正在匹配视频弹题';
   if (!options.enabled) return 'AI 总开关已关闭：请开启悬浮窗 AI 后自动处理视频弹题，或在视频里手动作答';
   if (!options.video) return '视频弹题 AI 分项已关闭：请在 AI 设置中开启，或在视频里手动作答';
   return '已发现视频弹题，正在定位 AI 识题流程';
@@ -384,7 +385,7 @@ async function deferVideoChapter(tabId, task, ctx, job, reason) {
 
 async function deferFailedVideoQuestion(tabId, task, ctx) {
   const options = await aiOptions();
-  const automatic = options.videoMode === 'trial' || (options.videoMode === 'ai' && options.enabled && options.video);
+  const automatic = options.videoMode === 'trial' || (options.videoMode === 'ai' && automaticAnswerEnabled(options, 'video'));
   if (!automatic) return false;
   const frame = ctx.questionFrame;
   const job = ctx.jobs.find(j => j.type === 'video' && j.id === task.currentJobId);
@@ -393,12 +394,12 @@ async function deferFailedVideoQuestion(tabId, task, ctx) {
       (task.questionResultAt && Date.now() - task.questionResultAt > 15000)) return deferVideoChapter(tabId, task, ctx, job, '视频弹题结果页无法关闭');
   if (options.videoMode === 'trial') return false;
   if (task.ai?.kind === 'video' && task.ai.stage === 'processing' && Date.now() - (task.ai.at || task.waitingSince || task.jobStartedAt || 0) > 45000) {
-    return deferVideoChapter(tabId, task, ctx, job, '视频弹题 AI 流程中断或超时');
+    return deferVideoChapter(tabId, task, ctx, job, '视频弹题自动答题流程中断或超时');
   }
   if (task.ai?.kind === 'video' && task.ai.stage === 'error') {
-    return deferVideoChapter(tabId, task, ctx, job, '视频弹题 AI 未能取得或填写有效答案');
+    return deferVideoChapter(tabId, task, ctx, job, '视频弹题自动答题未能取得或填写有效答案');
   }
-  if (frame.videoQuestionFeedback === 'incorrect') return deferVideoChapter(tabId, task, ctx, job, '视频弹题 AI 答案未通过平台校验');
+  if (frame.videoQuestionFeedback === 'incorrect') return deferVideoChapter(tabId, task, ctx, job, '视频弹题答案未通过平台校验');
   if (task.ai?.stage === 'submitted' && Date.now() - task.ai.at > 30000 && ['open', 'submitting'].includes(frame.videoQuestionFeedback)) {
     return deferVideoChapter(tabId, task, ctx, job, '视频弹题提交后未返回明确结果');
   }

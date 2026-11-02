@@ -1,4 +1,4 @@
-// 可选 AI 流程。调度仍由 0.2 的任务点运行器负责；每次副作用前重新检查上下文。
+// 本地题库优先、可选 AI 补充。每次读取、填写和提交前重新检查运行及题目上下文。
 const AI_COMMANDS = new Set(['READ_QUIZ', 'CAPTURE_QUESTION', 'FILL_QUIZ', 'VERIFY_QUIZ', 'SUBMIT_QUIZ', 'CONFIRM_SUBMIT', 'CONFIRM_TOP_SUBMIT',
   'READ_VIDEO_QUESTION', 'CAPTURE_VIDEO_QUESTION', 'FILL_VIDEO_QUESTION', 'SUBMIT_VIDEO_QUESTION']);
 function aiHash(value) {
@@ -7,11 +7,12 @@ function aiHash(value) {
   return `${(a >>> 0).toString(16).padStart(8, '0')}${(b >>> 0).toString(16).padStart(8, '0')}`;
 }
 async function aiOptions() {
-  const s = await chrome.storage.local.get(['aiEnabled', 'aiVideoEnabled', 'aiQuizEnabled', 'aiRevision', 'autoSubmit', 'videoAnswerMode']);
-  return { enabled: s.aiEnabled === true, video: s.aiVideoEnabled !== false, quiz: s.aiQuizEnabled !== false,
+  const s = await chrome.storage.local.get(['aiEnabled', 'aiVideoEnabled', 'aiQuizEnabled', 'aiRevision', 'autoSubmit', 'videoAnswerMode', 'questionBankEnabled']);
+  return { enabled: s.aiEnabled === true, bank: s.questionBankEnabled === true, video: s.aiVideoEnabled !== false, quiz: s.aiQuizEnabled !== false,
     revision: s.aiRevision || 'initial', autoSubmit: s.autoSubmit === true,
     videoMode: ['trial', 'manual'].includes(s.videoAnswerMode) ? s.videoAnswerMode : 'ai' };
 }
+function automaticAnswerEnabled(options, kind) { return options.bank || (options.enabled && options[kind]); }
 async function assertAICommand(guard) {
   if (!guard || guard.frameToken !== AI_DOCUMENT) throw new Error('题目页面已变化，旧结果已失效');
   const result = await chrome.runtime.sendMessage({ type: 'AI_VALIDATE', guard });
@@ -41,19 +42,20 @@ const AI_FATAL_ERROR = /填写答题接口密钥|截图授权|状态码 40[0-4]|
 const AIFlow = (() => {
   async function enabled(kind) {
     const options = await aiOptions();
-    return options.enabled && options[kind];
+    return automaticAnswerEnabled(options, kind);
   }
   function guardFor(task, frame, kind, options) {
     return { runId: task.runId, chapterId: task.activeChapterId, jobId: task.currentJobId,
       frameId: frame.frameId, frameToken: frame.aiDocument, kind, revision: options.revision,
-      eventIdentity: kind === 'video' ? frame.videoQuestionIdentity : undefined };
+      source: options.bank ? 'bank' : 'ai', eventIdentity: kind === 'video' ? frame.videoQuestionIdentity : undefined };
   }
   async function check(tabId, guard) {
     const options = await aiOptions();
     const task = (await chrome.storage.local.get(`task:${tabId}`))[`task:${tabId}`];
-    if (!options.enabled || !options[guard.kind] || (guard.kind === 'video' && options.videoMode !== 'ai') || options.revision !== guard.revision || !task || task.state !== 'running' ||
+    const allowed = guard.source === 'bank' ? options.bank : options.enabled && options[guard.kind];
+    if (!allowed || (guard.kind === 'video' && options.videoMode !== 'ai') || options.revision !== guard.revision || !task || task.state !== 'running' ||
         task.runId !== guard.runId || task.activeChapterId !== guard.chapterId || task.currentJobId !== guard.jobId) {
-      throw new Error('AI 已关闭或运行已变化，旧结果已失效');
+      throw new Error('答题功能已关闭或运行已变化，旧结果已失效');
     }
     const frames = await inspect();
     const main = frames.find(f => f.frameId === 0);
@@ -110,49 +112,77 @@ const AIFlow = (() => {
     const options = await aiOptions();
     const guard = guardFor(task, frame, kind, options);
     const label = kind === 'video' ? '视频弹题' : '章节测验';
+    let bankHits = 0, total = 0;
+    const answerState = patch => ({ kind, revision: guard.revision, source: guard.source, bankHits, total, ...patch });
     let step = 'read';
     try {
       await check(tabId, guard);
       const read = await frameCommand(frame.frameId, kind === 'video' ? 'READ_VIDEO_QUESTION' : 'READ_QUIZ', { guard });
       guard.fingerprint = read.fingerprint;
       if (!guard.fingerprint || !read.questions?.length) throw new Error('题目读取不完整');
+      total = read.questions.length;
       const key = submissionKey(task, guard);
       const { aiSubmissionLocks = {} } = await chrome.storage.local.get('aiSubmissionLocks');
       if (aiSubmissionLocks[key]) {
         return waitForUser(tabId, task, kind, `${label}已有提交记录，等待平台结果；不会重复提交`,
-          { kind, stage: 'submitted', key, at: aiSubmissionLocks[key].at, frameToken: guard.frameToken, fingerprint: guard.fingerprint });
+          answerState({ stage: 'submitted', source: aiSubmissionLocks[key].source || 'ai', key, at: aiSubmissionLocks[key].at, frameToken: guard.frameToken, fingerprint: guard.fingerprint }));
       }
-      await state(tabId, guard, { ai: { kind, stage: 'processing', revision: guard.revision, at: Date.now() }, status: `已识别 ${read.questions.length} 道${label}，正在读取题目` });
-      const images = [];
-      step = 'capture';
-      try {
-        for (const question of read.questions) if (question.needsImage) {
-          await check(tabId, guard);
-          images.push(await frameCommand(frame.frameId, kind === 'video' ? 'CAPTURE_VIDEO_QUESTION' : 'CAPTURE_QUESTION', { id: question.id, guard }));
-        }
-      } finally {
-        // 截图结束（成功或失败）立即释放后台截图的调试连接。
-        if (images.length || read.questions.some(question => question.needsImage)) {
-          await chrome.runtime.sendMessage({ type: 'CAPTURE_RELEASE' }).catch(() => {});
+      await state(tabId, guard, { ai: answerState({ stage: 'processing', at: Date.now() }), status: `已识别 ${total} 道${label}，正在${options.bank ? '匹配本地题库' : '读取题目'}` });
+      let answers = [];
+      let unresolved = read.questions;
+      if (options.bank) {
+        const found = await chrome.runtime.sendMessage({ type: 'BANK_LOOKUP', questions: read.questions, guard });
+        if (found?.error) throw new Error(found.error);
+        if (!Array.isArray(found?.answers) || !Array.isArray(found?.missing)) throw new Error('本地题库返回结果无效');
+        answers = found.answers; bankHits = answers.length;
+        const matched = new Set(answers.map(answer => String(answer.id)));
+        unresolved = read.questions.filter(question => !matched.has(String(question.id)));
+        await check(tabId, guard);
+        if (unresolved.length && !(options.enabled && options[kind])) {
+          const imageHint = unresolved.some(question => question.needsImage) ? '；图片或加密题无法直接匹配文字题库' : '';
+          return waitForUser(tabId, task, kind, `本地题库命中 ${bankHits}/${total} 题，${unresolved.length} 题未匹配或答案冲突${imageHint}；请补充题库后重新读取，或开启 AI`,
+            answerState({ stage: 'bank-miss', key, fingerprint: guard.fingerprint, eventIdentity: guard.eventIdentity, frameToken: guard.frameToken }));
         }
       }
-      step = 'answer';
-      await state(tabId, guard, { status: `AI 正在分析${label}` });
-      const answers = await chrome.runtime.sendMessage({ type: 'ANSWER', questions: read.questions, images, guard });
-      if (answers?.error) throw new Error(answers.error);
-      await state(tabId, guard, { status: `正在填写并核对${label}` });
+      // 仅将题库未命中的题目交给 AI；纯题库命中无需密钥、截图和接口请求。
+      if (unresolved.length) {
+        guard.source = 'ai';
+        const images = [];
+        step = 'capture';
+        try {
+          for (const question of unresolved) if (question.needsImage) {
+            await check(tabId, guard);
+            images.push(await frameCommand(frame.frameId, kind === 'video' ? 'CAPTURE_VIDEO_QUESTION' : 'CAPTURE_QUESTION', { id: question.id, guard }));
+          }
+        } finally {
+          // 截图结束（成功或失败）立即释放后台截图的调试连接。
+          if (images.length || unresolved.some(question => question.needsImage)) {
+            await chrome.runtime.sendMessage({ type: 'CAPTURE_RELEASE' }).catch(() => {});
+          }
+        }
+        step = 'answer';
+        await state(tabId, guard, { ai: answerState({ stage: 'processing', at: Date.now() }), status: `${options.bank ? `题库命中 ${bankHits}/${total} 题，` : ''}AI 正在分析${label}` });
+        const generated = await chrome.runtime.sendMessage({ type: 'ANSWER', questions: unresolved, images, guard });
+        if (generated?.error) throw new Error(generated.error);
+        if (!Array.isArray(generated)) throw new Error('AI 返回答案无效');
+        answers.push(...generated);
+      }
+      const byId = new Map(answers.map(answer => [String(answer.id), answer]));
+      if (answers.length !== total || byId.size !== total || read.questions.some(question => !byId.has(String(question.id)))) throw new Error('答案数量或题号不匹配，停止填写');
+      answers = read.questions.map(question => byId.get(String(question.id)));
+      await state(tabId, guard, { ai: answerState({ stage: 'processing', at: Date.now() }), status: `${bankHits ? `题库命中 ${bankHits}/${total} 题，` : ''}正在填写并核对${label}` });
       await frameCommand(frame.frameId, kind === 'video' ? 'FILL_VIDEO_QUESTION' : 'FILL_QUIZ', { answers, guard });
       await check(tabId, guard);
       if (kind === 'quiz') await frameCommand(frame.frameId, 'VERIFY_QUIZ', { answers, guard });
       await check(tabId, guard);
       if (kind === 'quiz' && !options.autoSubmit) {
-        return waitForUser(tabId, task, kind, '章节测验答案已填写并核对，请检查后手动提交', { kind, stage: 'manual', key });
+        return waitForUser(tabId, task, kind, `${bankHits ? `题库命中 ${bankHits}/${total} 题；` : ''}章节测验答案已填写并核对，请检查后手动提交`, answerState({ stage: 'manual', key }));
       }
       const lock = await chrome.runtime.sendMessage({ type: 'AI_CLAIM_SUBMISSION', key, guard });
       if (lock?.error) throw new Error(lock.error);
       if (!lock?.claimed) return waitForUser(tabId, task, kind, `${label}已有提交记录，请核对平台结果`,
-        { kind, stage: 'submitted', key, at: lock?.record?.at || Date.now(), frameToken: guard.frameToken, fingerprint: guard.fingerprint });
-      await state(tabId, guard, { ai: { kind, stage: 'submitted', key, at: Date.now(), frameToken: guard.frameToken, fingerprint: guard.fingerprint }, status: `正在提交${label}` });
+        answerState({ stage: 'submitted', source: lock?.record?.source || guard.source, key, at: lock?.record?.at || Date.now(), frameToken: guard.frameToken, fingerprint: guard.fingerprint }));
+      await state(tabId, guard, { ai: answerState({ stage: 'submitted', key, at: Date.now(), frameToken: guard.frameToken, fingerprint: guard.fingerprint }), status: `正在提交${label}` });
       await frameCommand(frame.frameId, kind === 'video' ? 'SUBMIT_VIDEO_QUESTION' : 'SUBMIT_QUIZ',
         kind === 'video' ? { guard, answers } : { guard });
       await state(tabId, guard, { phase: 'waiting', waitReason: kind === 'video' ? 'videoQuestion' : 'quiz',
@@ -161,7 +191,7 @@ const AIFlow = (() => {
     } catch (error) {
       const latest = (await chrome.storage.local.get(`task:${tabId}`))[`task:${tabId}`];
       // 已发起提交则保留提交记录，即使响应断开也不能重试提交。
-      const ai = latest?.ai?.stage === 'submitted' ? latest.ai : { kind, stage: 'error', revision: guard.revision,
+      const ai = latest?.ai?.stage === 'submitted' ? latest.ai : { ...answerState({ stage: 'error' }),
         frameToken: guard.frameToken, fingerprint: guard.fingerprint, eventIdentity: guard.eventIdentity };
       if (ai.stage !== 'submitted' && captureStageFailure(error.message || '', step)) {
         const retries = latest?.captureRetries || 0;
@@ -196,16 +226,16 @@ const AIFlow = (() => {
   async function maybeVideo(tabId, task, ctx) {
     if (!ctx.questionFrame) return false;
     const options = await aiOptions();
-    if (!options.enabled || !options.video || options.videoMode !== 'ai') return false;
+    if (!automaticAnswerEnabled(options, 'video') || options.videoMode !== 'ai') return false;
     const surface = ctx.questionFrame;
     const job = ctx.jobs.find(j => j.type === 'video' && j.id === surface.jobId) ||
       ctx.jobs.find(j => j.type === 'video' && mediaFrameFor(j, ctx)?.frameId === surface.frameId);
     if (!job) {
-      if (task.waitingSince && Date.now() - task.waitingSince > 20000) return deferVideoChapter(tabId, task, ctx, null, '视频弹题 AI 无法匹配所属任务点');
+      if (task.waitingSince && Date.now() - task.waitingSince > 20000) return deferVideoChapter(tabId, task, ctx, null, '视频弹题自动答题无法匹配所属任务点');
       await saveTask(tabId, { phase: 'waiting', waitReason: 'videoQuestion', waitingSince: task.waitingSince || Date.now(),
         ai: { kind: 'video', stage: 'error', code: 'unmatched-video', revision: options.revision },
-        status: ctx.cardsLoaded ? '视频弹题 AI 已开启，但无法匹配所属视频任务点；请重新读取当前题目或导出日志' :
-          '已发现视频弹题，正在等待课程任务点加载，随后进入 AI 识题' });
+        status: ctx.cardsLoaded ? '视频弹题自动答题已开启，但无法匹配所属视频任务点；请重新读取当前题目或导出日志' :
+          '已发现视频弹题，正在等待课程任务点加载，随后自动答题' });
       return true;
     }
     // 用户从测验切回视频，或点击了另一段视频时，旧任务的 AI 状态不能挡住新弹题。
@@ -223,7 +253,7 @@ const AIFlow = (() => {
     }
     if (task.ai?.code === 'unmatched-video') task = await saveTask(tabId, { ai: null });
     // 两次弹题可能间隔短于轮询周期，期间不一定能观察到“弹层关闭”。
-    if (task.ai?.kind === 'video' && ['submitted', 'error'].includes(task.ai.stage) &&
+    if (task.ai?.kind === 'video' && ['submitted', 'error', 'bank-miss'].includes(task.ai.stage) &&
         surface.videoQuestionFeedback === 'open' &&
         ((surface.videoQuestionFingerprint && task.ai.fingerprint && surface.videoQuestionFingerprint !== task.ai.fingerprint) ||
           (task.ai.eventIdentity && surface.videoQuestionIdentity && task.ai.eventIdentity !== surface.videoQuestionIdentity))) {
@@ -231,6 +261,10 @@ const AIFlow = (() => {
         questionClosedAt: null, questionContinueClickedAt: null, questionResumePlayAt: null, questionResultAt: null });
     }
     if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null });
+    if (task.ai?.stage === 'bank-miss') {
+      if (task.ai.revision === options.revision) return true;
+      task = await saveTask(tabId, { ai: null });
+    }
     if (task.ai) return false;
     if (!['open', null, undefined].includes(ctx.questionFrame.videoQuestionFeedback)) return false;
     await perform(tabId, task, ctx.questionFrame, 'video');
@@ -242,10 +276,15 @@ const AIFlow = (() => {
     const options = await aiOptions();
     // 章节测验不一定计入左侧目录的未完成任务点；AI 开启时不能因为“任务点已完成”
     // 就把它当成做完，否则会离开等待、下一轮又重新填写同一份测验。
-    if (ctx.treeTask?.kind === 'complete' && !(options.enabled && options.quiz)) return false;
-    if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision && options.enabled && options.quiz) task = await saveTask(tabId, { ai: null, aiAttempts: 0 });
+    const active = automaticAnswerEnabled(options, 'quiz');
+    if (ctx.treeTask?.kind === 'complete' && !active) return false;
+    if (task.ai?.stage === 'bank-miss') {
+      if (active && task.ai.revision === options.revision) return true;
+      task = await saveTask(tabId, { ai: null });
+    }
+    if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision && active) task = await saveTask(tabId, { ai: null, aiAttempts: 0 });
     if (task.ai?.stage === 'foreground' && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null });
-    if (task.ai?.stage === 'foreground' && options.enabled && options.quiz) {
+    if (task.ai?.stage === 'foreground' && active) {
       const retryDue = task.ai.retryAt && Date.now() >= task.ai.retryAt;
       if (document.hidden && !retryDue) return true;
       task = await saveTask(tabId, { ai: null, jobRevealedAt: null,
@@ -253,7 +292,7 @@ const AIFlow = (() => {
         status: document.hidden ? '正在后台重新读取章节测验' : '已返回课程页，重新读取章节测验' });
     }
     // 到达重试时间：清掉错误并重新定位测验（重新展开任务点），再次识题。
-    if (task.ai?.stage === 'error' && task.ai.retryAt && options.enabled && options.quiz) {
+    if (task.ai?.stage === 'error' && task.ai.retryAt && active) {
       if (Date.now() < task.ai.retryAt) return true;
       task = await saveTask(tabId, { ai: null, jobRevealedAt: null,
         status: `正在自动重新识别章节测验（第 ${task.aiAttempts || 1}/${AI_RETRY_DELAYS.length} 次重试）` });
@@ -268,7 +307,8 @@ const AIFlow = (() => {
     const main = ctx.frames.find(f => f.frameId === 0);
     // 确认框可能在测验 iframe 内（旧版/submitBack），也可能在顶层学习页（#workpop）。
     const where = frame?.hasSubmitConfirm ? 'quiz' : main?.topSubmitConfirm ? 'top' : null;
-    if (where && options.enabled && options.quiz && options.autoSubmit && !task.ai.confirmedAt) {
+    const canConfirm = task.ai?.source === 'bank' ? options.bank : options.enabled && options.quiz;
+    if (where && canConfirm && options.autoSubmit && !task.ai.confirmedAt) {
       const documentChanged = frame && task.ai.frameToken && frame.aiDocument !== task.ai.frameToken;
       if (where === 'quiz' && (!task.ai.frameToken || documentChanged)) {
         await saveTask(tabId, { status: '测验页面已刷新或变化，请人工核对提交确认；不会重复提交' });
@@ -281,6 +321,7 @@ const AIFlow = (() => {
       }
       const guard = where === 'quiz' ? { ...guardFor(task, frame, 'quiz', options), fingerprint: task.ai.fingerprint } :
         guardFor(task, main, 'quiz', options);
+      guard.source = task.ai.source || 'ai';
       try {
         const claim = await chrome.runtime.sendMessage({ type: 'AI_CLAIM_SUBMISSION', key: task.ai.key, confirmation: true, guard });
         if (claim?.error) throw new Error(claim.error);

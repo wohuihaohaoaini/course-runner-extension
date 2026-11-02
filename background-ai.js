@@ -6,13 +6,15 @@ const TEXT_MODEL = "deepseek-flash";
 const activeAIRequests = new Set();
 let aiSettingsWrites = Promise.resolve();
 let aiLockWrites = Promise.resolve();
-const AI_OPTION_KEYS = ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit"];
-const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "allowBackgroundCapture", "aiRevision"];
+const AI_OPTION_KEYS = ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit", "questionBankEnabled"];
+const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "questionBank", "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "allowBackgroundCapture", "aiRevision"];
 
 async function assertAIRequest(tabId, guard) {
   if (!guard || !Number.isInteger(tabId) || !["quiz", "video"].includes(guard.kind)) throw new Error("AI 请求上下文已失效");
   const stored = await chrome.storage.local.get([`task:${tabId}`, ...AI_OPTION_KEYS, "aiRevision", "videoAnswerMode"]);
-  if (stored.aiEnabled !== true || stored[guard.kind === "video" ? "aiVideoEnabled" : "aiQuizEnabled"] === false) throw new Error("AI 识题已关闭");
+  if (guard.source === 'bank') {
+    if (stored.questionBankEnabled !== true) throw new Error('本地题库答题已关闭');
+  } else if (stored.aiEnabled !== true || stored[guard.kind === "video" ? "aiVideoEnabled" : "aiQuizEnabled"] === false) throw new Error("AI 识题已关闭");
   if (guard.kind === 'video' && stored.videoAnswerMode && stored.videoAnswerMode !== 'ai') throw new Error('视频答题模式已变化');
   const task = stored[`task:${tabId}`];
   if (!task || task.state !== "running" || !guard.runId || task.runId !== guard.runId ||
@@ -85,7 +87,7 @@ async function claimAISubmission(tabId, guard, key, confirmation = false) {
     const { aiSubmissionLocks = {} } = await chrome.storage.local.get("aiSubmissionLocks");
     const previous = aiSubmissionLocks[key];
     if (confirmation ? (!previous || previous.confirmed) : Boolean(previous)) return { claimed: false, record: previous };
-    const next = { ...previous, at: previous?.at || Date.now(), confirmed: confirmation };
+    const next = { ...previous, at: previous?.at || Date.now(), confirmed: confirmation, source: previous?.source || guard.source || 'ai' };
     aiSubmissionLocks[key] = next;
     // 已提交记录保留，不以过期或新一轮开始为理由自动重新提交。
     await chrome.storage.local.set({ aiSubmissionLocks });
@@ -398,6 +400,7 @@ async function readAIResponse(response) {
 }
 
 async function answerQuestions(questions, images = [], tabId, guard) {
+  if (guard?.source === 'bank') throw new Error('本地题库答题不能调用 AI 接口');
   await validateAIContext(tabId, guard);
   if (!Array.isArray(questions) || !questions.length || questions.length > 100 || new Set(questions.map(q => q.id)).size !== questions.length) throw new Error("题目数量或编号无效");
   const { apiKey, model, referenceText, customPrompt } = await chrome.storage.local.get(["apiKey", "model", "referenceText", "customPrompt"]);

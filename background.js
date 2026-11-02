@@ -1,4 +1,4 @@
-if (typeof importScripts === "function") importScripts("content/blank-editor.js", "background-ai.js");
+if (typeof importScripts === "function") importScripts("content/blank-editor.js", "background-bank.js", "background-ai.js");
 const DIAGNOSTIC_KEY = "diagnostics";
 const DIAGNOSTIC_LIMIT = 300;
 const DIAGNOSTIC_EVENTS = new Set(["start", "pause", "state", "snapshot", "command", "error", "structure", "notify", "usage"]);
@@ -204,6 +204,11 @@ chrome.notifications?.onClicked.addListener(async (id) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (["BANK_LIST", "BANK_IMPORT", "BANK_SAVE", "BANK_DELETE", "BANK_LOOKUP"].includes(message.type)) return QuestionBank.handle(message, sender);
+    if (message.type === "OPEN_QUESTION_BANK") {
+      await chrome.tabs.create({ url: chrome.runtime.getURL("question-bank.html") });
+      return { ok: true };
+    }
     if (["SET_AI_SETTINGS", "CANCEL_AI", "AI_VALIDATE", "VIDEO_TRIAL_VALIDATE", "AI_CLAIM_SUBMISSION", "ANSWER", "CAPTURE_PREPARE", "CAPTURE_TAB", "CAPTURE_RELEASE", "FILL_BLANKS", "VERIFY_BLANKS"].includes(message.type)) return handleAIMessage(message, sender);
     if (message.type === "OPEN_AI_SETTINGS") {
       if (chrome.action?.openPopup) {

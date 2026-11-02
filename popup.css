@@ -30,6 +30,7 @@ details + details { margin-top: 10px; }
 .mute[aria-pressed="true"] { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
 
 .key-row { display:flex; gap:6px; }
+.bank-button { margin-top: 10px; width: 100%; color: #1d4ed8; border-color: #93c5fd; background: #eff6ff; }
 .key-row input { min-width:0; flex:1; }
 input[type="password"], textarea { width:100%; padding:7px; border:1px solid #cbd5e1; border-radius:4px; background:white; }
 textarea { resize:vertical; font-size:12px; margin-bottom:6px; }
