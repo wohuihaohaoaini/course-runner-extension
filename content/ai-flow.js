@@ -262,7 +262,11 @@ const AIFlow = (() => {
     }
     if (task.ai?.stage === 'error' && task.ai.revision && task.ai.revision !== options.revision) task = await saveTask(tabId, { ai: null });
     if (task.ai?.stage === 'bank-miss') {
-      if (task.ai.revision === options.revision) return true;
+      // 题目仍待作答时等用户补题或手动答；平台已返回结果（用户手动答完）时交回正常的继续／恢复播放流程。
+      if (task.ai.revision === options.revision) {
+        if (['open', null, undefined].includes(surface.videoQuestionFeedback)) return true;
+        return false;
+      }
       task = await saveTask(tabId, { ai: null });
     }
     if (task.ai) return false;

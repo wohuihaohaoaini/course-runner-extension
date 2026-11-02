@@ -44,8 +44,20 @@ const StuckGuard = (() => {
       task = await saveTask(tabId, { stuck: { ...task.stuck, until: task.stuck.since + limit } });
     }
     if (Date.now() < task.stuck.until) return false;
+    // 到期这一轮平台可能已经完成，或用户刚处理完：先交回正常等待流程，不记入待办。
+    if (resolved(task, ctx)) return false;
     await skip(tabId, task, ctx, Math.round(limit / 60000));
     return true;
+  }
+
+  function resolved(task, ctx) {
+    const job = ctx.jobs.find((item) => item.id === task.currentJobId);
+    if (job?.finished) return true;
+    if (task.waitReason === 'videoQuestion') {
+      const surface = ctx.questionFrame;
+      return !surface || ['continue', 'correct', 'closed'].includes(surface.videoQuestionFeedback);
+    }
+    return false;
   }
 
   async function skip(tabId, task, ctx, minutes) {
