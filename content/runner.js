@@ -15,19 +15,31 @@ let lastDiagnosticSnapshotAt = 0;
 const LOG_LIMIT = 40;
 const TODO_LIMIT = 100;
 
-async function saveTask(tabId, patch) {
-  const key = `task:${tabId}`;
-  const task = (await chrome.storage.local.get(key))[key] || {};
-  const next = { ...task, ...patch, updatedAt: Date.now() };
-  // 状态文字变化时记一行日志，供页面悬浮面板显示。
-  if (patch.status && patch.status !== task.status) {
-    next.log = [...(task.log || []), { at: Date.now(), text: patch.status }].slice(-LOG_LIMIT);
-  }
-  await chrome.storage.local.set({ [key]: next });
-  if (next.phase !== task.phase || next.state !== task.state) {
-    recordDiagnostic("state", { phase: next.phase, state: next.state });
-  }
-  return next;
+// 同一页面内所有任务写入串行执行，读取与写回之间不会插入暂停等其他写入。
+let taskWriteQueue = Promise.resolve();
+function queueTaskWrite(write) {
+  const run = taskWriteQueue.then(write);
+  taskWriteQueue = run.catch(() => {});
+  return run;
+}
+
+function saveTask(tabId, patch) {
+  return queueTaskWrite(async () => {
+    const key = `task:${tabId}`;
+    const task = (await chrome.storage.local.get(key))[key] || {};
+    // 用户暂停后，暂停前已发起的进度写入一律丢弃，不能把 state 恢复为 running。
+    if (task.state === "paused" && task.pausedBy === "user") return task;
+    const next = { ...task, ...patch, updatedAt: Date.now() };
+    // 状态文字变化时记一行日志，供页面悬浮面板显示。
+    if (patch.status && patch.status !== task.status) {
+      next.log = [...(task.log || []), { at: Date.now(), text: patch.status }].slice(-LOG_LIMIT);
+    }
+    await chrome.storage.local.set({ [key]: next });
+    if (next.phase !== task.phase || next.state !== task.state) {
+      recordDiagnostic("state", { phase: next.phase, state: next.state });
+    }
+    return next;
+  });
 }
 
 async function frameCommand(frameId, command, data) {

@@ -52,6 +52,15 @@ test('bank tolerates platform numbering, type labels and repeated whitespace but
   assert.equal(f.lookup([{ ...question, stem: '一加一不等于几？' }], [single]).hits, 0);
   assert.equal(f.lookup([{ ...question, stem: '一加一等于几？!' }], [single]).hits, 0);
 });
+test('bank tolerates numbering without a space, trailing scores, a final full stop and full-width punctuation', () => {
+  const f = fixture();
+  for (const stem of ['1.一加一等于几？', '2、【单选题】一加一等于几？（2分）', '【单选题】 一加一等于几? (2.0分)', '一加一 等于几？']) {
+    assert.equal(f.lookup([{ ...question, stem }], [single]).hits, 1, stem);
+  }
+  assert.equal(f.lookup([{ ...question, stem: '下列说法正确' }], [{ ...single, stem: '下列说法正确。' }]).hits, 1);
+  assert.equal(f.lookup([{ ...question, stem: '3.14是圆周率吗' }], [{ ...single, stem: '14是圆周率吗' }]).hits, 0);
+  assert.equal(f.lookup([{ ...question, options: [{ id: 'A', text: 'A. 三' }, { id: 'B', text: 'B、二。' }] }], [single]).hits, 1);
+});
 test('case, superscripts and word boundaries retain their meaning when matching', () => {
   const f = fixture();
   for (const [original, different] of [['CO', 'Co'], ['2²', '22'], ['not able', 'notable']]) {

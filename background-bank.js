@@ -4,17 +4,26 @@ const QuestionBank = (() => {
   const MAX_BYTES = 2 * 1024 * 1024;
   const TYPES = new Set(['single', 'multiple', 'judgment', 'fill']);
   const normalize = value => String(value || '').normalize('NFC').replace(/[\u200b-\u200d\ufeff]/g, '').replace(/\s+/g, ' ').trim();
+  // 匹配键：全角 ASCII 字符转半角，汉字和标点之间的空白去掉（英文单词之间保留一个空格），
+  // 去掉平台常见的题号、题型标签、结尾分值和一个句号；大小写、上下标、问号叹号等仍需一致。
+  const halfWidth = value => value.replace(/[\uff01-\uff5e]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xfee0)).replace(/\u3000/g, ' ');
+  const compact = value => normalize(halfWidth(normalize(value))).replace(/ (?![A-Za-z0-9])|(?<![A-Za-z0-9]) /g, '').replace(/_{2,}/g, '__');
+  const SCORE = /\(\d+(?:\.\d+)?分\)$/;
   function stemKey(value) {
-    return normalize(String(value || '').normalize('NFC').trim()
-      .replace(/^\d+\s*(?=【(?:单选|多选|判断|填空)题】)/, '')
-      .replace(/^\d+[.、．)]\s+/, '')
-      .replace(/^【(?:单选|多选|判断|填空)题】\s*/, ''));
+    return compact(value)
+      .replace(/^\d+[.、)]?(?=【(?:单选|多选|判断|填空)题】)/, '')
+      .replace(/^\d+[.、)](?!\d)/, '')
+      .replace(/^【(?:单选|多选|判断|填空)题】/, '')
+      .replace(/^\d+[.、)](?!\d)/, '')
+      .replace(SCORE, '')
+      .replace(/[。.]$/, '');
   }
   function optionKey(value, type) {
-    const text = normalize(value);
+    const full = compact(value);
+    const text = full.replace(/^[A-Z][.、)](?=.)/, '').replace(/[。.;；]$/, '') || full;
     if (type === 'judgment') {
-      if (/^(对|正确|是|true|√|✓)$/i.test(text)) return 'true';
-      if (/^(错|错误|否|false|×|✗)$/i.test(text)) return 'false';
+      if (/^(对|正确|是|true|√|✓|✔)$/i.test(text)) return 'true';
+      if (/^(错|错误|否|false|×|✗|✘)$/i.test(text)) return 'false';
     }
     return text;
   }

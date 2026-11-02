@@ -291,3 +291,9 @@ test('bank-only image questions wait without requesting screenshots or AI',async
 test('manual video mode takes precedence over an enabled question bank',async()=>{
  const f=fixture('video',{...bankSettings,videoAnswerMode:'manual'});await f.tick();assert.equal(f.lookups(),0);assert.equal(f.submits(),0);assert.match(f.task().status,/手动/);
 });
+test('after a bank miss the user answers the video question by hand and the runner clicks continue',async()=>{
+ const f=fixture('video',{...bankSettings,questionBank:[{...bankEntry,stem:'另一道题'}]});await f.tick();
+ assert.equal(f.task().ai.stage,'bank-miss');
+ f.frame.videoQuestionFeedback='continue';await f.tick();
+ assert.ok(f.commands.includes('CONTINUE_VIDEO_QUESTION'));assert.equal(f.submits(),0);assert.equal(f.answers(),0);
+});
