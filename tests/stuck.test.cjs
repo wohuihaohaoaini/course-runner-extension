@@ -28,7 +28,7 @@ function runner(frames, taskPatch = {}, extra = {}, hidden = false) {
   });
   loadContent(context);
   const tick = () => vm.runInContext(`tick(1, ${JSON.stringify(stored['task:1'])})`, context);
-  return { stored, sent, tick, task: () => stored['task:1'] };
+  return { stored, sent, tick, context, task: () => stored['task:1'] };
 }
 
 const MIN = 60000;
@@ -119,4 +119,26 @@ test('paused video in a hidden tab without background playback says how to fix i
   await r.tick();
   assert.equal(r.task().waitReason, 'paused');
   assert.match(r.task().status, /允许后台播放/);
+});
+
+test('a task point the platform already marked finished is not recorded as a todo when the deadline passes', async () => {
+  const r = runner([main(), cards([job('q', 'quiz', { finished: true }), job('b', 'document')])],
+    { phase: 'waiting', waitReason: 'quiz', currentJobId: 'q', stuck: stuckFor('7:q', 3 * MIN + 1000) });
+  await r.tick();
+  assert.deepEqual(r.task().skippedJobs, []);
+  assert.equal((r.stored.todos || []).length, 0);
+  assert.equal(r.task().waitReason, null);
+  assert.match(r.task().status, /已完成/);
+});
+
+test('saveTask cannot undo a user pause that lands between its read and write', async () => {
+  const r = runner([main()], { runId: 'r1' });
+  const ctx = r.context;
+  const write = vm.runInContext(`saveTask(1, { status: '正在提交章节测验' })`, ctx);
+  const pause = vm.runInContext(`pauseTask('task:1', ${JSON.stringify(r.task())})`, ctx);
+  await Promise.all([write, pause]);
+  // 暂停之后才开始的进度写入同样被丢弃。
+  await vm.runInContext(`saveTask(1, { state: 'running', status: '旧流程继续' })`, ctx);
+  assert.equal(r.task().state, 'paused');
+  assert.equal(r.task().status, '已由用户暂停');
 });

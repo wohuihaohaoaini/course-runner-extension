@@ -27,14 +27,14 @@
         <option value="unfinished">自动进入下一个未完成小节</option>
         <option value="stop">停下，等我自己换节</option>
       </select>
-      <label for="quizMode">AI 关闭时遇到章节测验</label>
+      <label for="quizMode">题库与 AI 都关闭时遇到章节测验</label>
       <select id="quizMode">
         <option value="skip">先跳过，记进“待你处理”</option>
         <option value="wait">停下等我做完再继续</option>
       </select>
       <label for="videoAnswerMode">视频弹题处理</label>
       <select id="videoAnswerMode">
-        <option value="ai">AI 作答（需开启 AI）</option>
+        <option value="ai">题库优先 / AI 作答</option>
         <option value="trial">单选顺序试答 A → B → C → D（无需 AI）</option>
         <option value="manual">手动作答</option>
       </select>
@@ -47,21 +47,29 @@
       <label class="check"><input id="notify" type="checkbox" checked> 需要我处理时发桌面通知</label>
       <p class="hint">验证码和人脸识别需要你本人处理；后台遇到时会发通知提醒你回到课程页。</p>
     </details>
+    <details id="bankSettings" open>
+      <summary>本地题库（无需 AI）</summary>
+      <label class="check"><input id="questionBankEnabled" type="checkbox"> 启用本地题库答题</label>
+      <p class="hint" id="bankStatus">已录入 0 题</p>
+      <button id="openQuestionBank" class="bank-button">录入 / 导入题库</button>
+      <p class="hint">题库命中后直接填写，无需密钥。未命中时仅在已开启对应 AI 分项时使用 AI；章节测验是否自动提交由下方开关决定。</p>
+    </details>
     <details id="aiSettings" open>
       <summary>AI 识题</summary>
       <label class="check"><input id="aiEnabled" type="checkbox"> 开启 AI 识题（总开关）</label>
       <label class="check"><input id="aiVideoEnabled" type="checkbox" checked> 视频弹题 AI：识题、作答并继续播放（仅 AI 模式）</label>
       <label class="check"><input id="aiQuizEnabled" type="checkbox" checked> 章节测验：AI 识题与填写</label>
-      <label class="check"><input id="autoSubmit" type="checkbox"> 自动提交章节测验</label>
+      <label class="check"><input id="autoSubmit" type="checkbox"> 自动提交章节测验（题库 / AI 通用）</label>
       <p class="hint" id="aiHint">AI 默认关闭。视频单选可在“运行设置”选择顺序试答，无需密钥。章节测验默认仅填写。</p>
       <label for="apiKey">DeepSeek 接口密钥</label>
       <div class="key-row"><input id="apiKey" type="password" autocomplete="off" placeholder="sk-…"><button id="saveKey">保存</button></div>
       <button id="clearKey" class="link">删除本机密钥</button>
       <label for="model">文字识题模型（图像题固定使用 Flash）</label>
       <select id="model"><option value="deepseek-flash">DeepSeek Flash（默认）</option><option value="deepseek-v4-pro">DeepSeek Pro</option></select>
-      <label for="reference">课程资料（可选）</label>
+      <label for="reference">AI 参考资料（可选）</label>
       <textarea id="reference" rows="3" maxlength="24000" placeholder="课程笔记或教材摘要"></textarea>
       <button id="saveReference">保存资料</button>
+      <p class="hint">此处资料供 AI 参考；无需 AI 的题目与答案请在“本地题库”中录入。</p>
       <label for="customPrompt">自定义提示词（可选，最多 500 字）</label>
       <textarea id="customPrompt" rows="2" maxlength="500" placeholder="例如：填空优先使用教材术语"></textarea>
       <button id="savePrompt">保存提示词</button>

@@ -6,13 +6,15 @@ const TEXT_MODEL = "deepseek-flash";
 const activeAIRequests = new Set();
 let aiSettingsWrites = Promise.resolve();
 let aiLockWrites = Promise.resolve();
-const AI_OPTION_KEYS = ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit"];
-const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "allowBackgroundCapture", "aiRevision"];
+const AI_OPTION_KEYS = ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit", "questionBankEnabled"];
+const AI_REVISION_KEYS = [...AI_OPTION_KEYS, "questionBank", "videoAnswerMode", "apiKey", "model", "referenceText", "customPrompt", "allowBackgroundCapture", "aiRevision"];
 
 async function assertAIRequest(tabId, guard) {
   if (!guard || !Number.isInteger(tabId) || !["quiz", "video"].includes(guard.kind)) throw new Error("AI 请求上下文已失效");
   const stored = await chrome.storage.local.get([`task:${tabId}`, ...AI_OPTION_KEYS, "aiRevision", "videoAnswerMode"]);
-  if (stored.aiEnabled !== true || stored[guard.kind === "video" ? "aiVideoEnabled" : "aiQuizEnabled"] === false) throw new Error("AI 识题已关闭");
+  if (guard.source === 'bank') {
+    if (stored.questionBankEnabled !== true) throw new Error('本地题库答题已关闭');
+  } else if (stored.aiEnabled !== true || stored[guard.kind === "video" ? "aiVideoEnabled" : "aiQuizEnabled"] === false) throw new Error("AI 识题已关闭");
   if (guard.kind === 'video' && stored.videoAnswerMode && stored.videoAnswerMode !== 'ai') throw new Error('视频答题模式已变化');
   const task = stored[`task:${tabId}`];
   if (!task || task.state !== "running" || !guard.runId || task.runId !== guard.runId ||
@@ -85,7 +87,7 @@ async function claimAISubmission(tabId, guard, key, confirmation = false) {
     const { aiSubmissionLocks = {} } = await chrome.storage.local.get("aiSubmissionLocks");
     const previous = aiSubmissionLocks[key];
     if (confirmation ? (!previous || previous.confirmed) : Boolean(previous)) return { claimed: false, record: previous };
-    const next = { ...previous, at: previous?.at || Date.now(), confirmed: confirmation };
+    const next = { ...previous, at: previous?.at || Date.now(), confirmed: confirmation, source: previous?.source || guard.source || 'ai' };
     aiSubmissionLocks[key] = next;
     // 已提交记录保留，不以过期或新一轮开始为理由自动重新提交。
     await chrome.storage.local.set({ aiSubmissionLocks });
@@ -235,6 +237,23 @@ async function captureWithDebugger(tab, guard) {
   } finally { session.busy = false; }
 }
 
+// captureVisibleTab 只能指定窗口、截的是当时选中的标签页；只比较截图前后是否选中，
+// 发现不了“切走、截图、再切回”。截图期间监听切换事件，发生过即丢弃这张图。
+function watchTabSwitch(tab) {
+  const watch = { switched: false };
+  const mark = () => { watch.switched = true; };
+  const listeners = [
+    [chrome.tabs?.onActivated, info => { if (info?.windowId === tab.windowId) mark(); }],
+    [chrome.tabs?.onAttached, tabId => { if (tabId === tab.id) mark(); }],
+    [chrome.tabs?.onDetached, tabId => { if (tabId === tab.id) mark(); }],
+    [chrome.tabs?.onReplaced, (added, removed) => { if (added === tab.id || removed === tab.id) mark(); }],
+    [chrome.tabs?.onUpdated, (tabId, info) => { if (tabId === tab.id && info?.url) mark(); }]
+  ].filter(([event]) => event?.addListener);
+  for (const [event, listener] of listeners) event.addListener(listener);
+  watch.stop = () => { for (const [event, listener] of listeners) event.removeListener?.(listener); };
+  return watch;
+}
+
 async function captureTab(tab, guard, pageHidden) {
   await validateAIContext(tab.id, guard);
   let mode = await captureMode(tab, pageHidden);
@@ -243,15 +262,18 @@ async function captureTab(tab, guard, pageHidden) {
     await new Promise(resolve => setTimeout(resolve, 120));
     let image;
     if (mode === "visible") {
+      const watch = watchTabSwitch(tab);
       try {
         image = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-        // 截图期间课程页被切走时，截到的是别的网页，必须丢弃。
-        if (!await visibleCapturePossible(tab, false)) throw new Error("截图时切换了标签页，已停止识别");
+        // 截图期间课程页被切走时，截到的是别的网页，必须丢弃（含切走后又切回）。
+        // 先等一次浏览器往返，确保截图期间的切换事件已送达。
+        const stillVisible = await visibleCapturePossible(tab, false);
+        if (watch.switched || !stillVisible) { image = null; throw new Error("截图时切换了标签页，已停止识别"); }
       } catch (error) {
         // 缺少工具栏授权时，已开启后台截图的用户可直接改用调试接口截图。
         if (!/activeTab|not been invoked|permission|denied/i.test(error?.message || "") || !await backgroundCaptureAllowed()) throw error;
         mode = "debugger";
-      }
+      } finally { watch.stop(); }
     }
     if (mode === "debugger") image = await captureWithDebugger(tab, guard);
     await validateAIContext(tab.id, guard);
@@ -398,6 +420,7 @@ async function readAIResponse(response) {
 }
 
 async function answerQuestions(questions, images = [], tabId, guard) {
+  if (guard?.source === 'bank') throw new Error('本地题库答题不能调用 AI 接口');
   await validateAIContext(tabId, guard);
   if (!Array.isArray(questions) || !questions.length || questions.length > 100 || new Set(questions.map(q => q.id)).size !== questions.length) throw new Error("题目数量或编号无效");
   const { apiKey, model, referenceText, customPrompt } = await chrome.storage.local.get(["apiKey", "model", "referenceText", "customPrompt"]);

@@ -15,19 +15,31 @@ let lastDiagnosticSnapshotAt = 0;
 const LOG_LIMIT = 40;
 const TODO_LIMIT = 100;
 
-async function saveTask(tabId, patch) {
-  const key = `task:${tabId}`;
-  const task = (await chrome.storage.local.get(key))[key] || {};
-  const next = { ...task, ...patch, updatedAt: Date.now() };
-  // 状态文字变化时记一行日志，供页面悬浮面板显示。
-  if (patch.status && patch.status !== task.status) {
-    next.log = [...(task.log || []), { at: Date.now(), text: patch.status }].slice(-LOG_LIMIT);
-  }
-  await chrome.storage.local.set({ [key]: next });
-  if (next.phase !== task.phase || next.state !== task.state) {
-    recordDiagnostic("state", { phase: next.phase, state: next.state });
-  }
-  return next;
+// 同一页面内所有任务写入串行执行，读取与写回之间不会插入暂停等其他写入。
+let taskWriteQueue = Promise.resolve();
+function queueTaskWrite(write) {
+  const run = taskWriteQueue.then(write);
+  taskWriteQueue = run.catch(() => {});
+  return run;
+}
+
+function saveTask(tabId, patch) {
+  return queueTaskWrite(async () => {
+    const key = `task:${tabId}`;
+    const task = (await chrome.storage.local.get(key))[key] || {};
+    // 用户暂停后，暂停前已发起的进度写入一律丢弃，不能把 state 恢复为 running。
+    if (task.state === "paused" && task.pausedBy === "user") return task;
+    const next = { ...task, ...patch, updatedAt: Date.now() };
+    // 状态文字变化时记一行日志，供页面悬浮面板显示。
+    if (patch.status && patch.status !== task.status) {
+      next.log = [...(task.log || []), { at: Date.now(), text: patch.status }].slice(-LOG_LIMIT);
+    }
+    await chrome.storage.local.set({ [key]: next });
+    if (next.phase !== task.phase || next.state !== task.state) {
+      recordDiagnostic("state", { phase: next.phase, state: next.state });
+    }
+    return next;
+  });
 }
 
 async function frameCommand(frameId, command, data) {
@@ -325,6 +337,7 @@ async function videoManualStatus() {
   const options = await aiOptions();
   if (options.videoMode === 'trial') return '视频单选顺序试答已开启，不需要开启 AI';
   if (options.videoMode === 'manual') return '视频弹题已设为手动，完成后自动继续';
+  if (options.bank) return '本地题库已开启，正在匹配视频弹题';
   if (!options.enabled) return 'AI 总开关已关闭：请开启悬浮窗 AI 后自动处理视频弹题，或在视频里手动作答';
   if (!options.video) return '视频弹题 AI 分项已关闭：请在 AI 设置中开启，或在视频里手动作答';
   return '已发现视频弹题，正在定位 AI 识题流程';
@@ -384,7 +397,7 @@ async function deferVideoChapter(tabId, task, ctx, job, reason) {
 
 async function deferFailedVideoQuestion(tabId, task, ctx) {
   const options = await aiOptions();
-  const automatic = options.videoMode === 'trial' || (options.videoMode === 'ai' && options.enabled && options.video);
+  const automatic = options.videoMode === 'trial' || (options.videoMode === 'ai' && automaticAnswerEnabled(options, 'video'));
   if (!automatic) return false;
   const frame = ctx.questionFrame;
   const job = ctx.jobs.find(j => j.type === 'video' && j.id === task.currentJobId);
@@ -393,12 +406,12 @@ async function deferFailedVideoQuestion(tabId, task, ctx) {
       (task.questionResultAt && Date.now() - task.questionResultAt > 15000)) return deferVideoChapter(tabId, task, ctx, job, '视频弹题结果页无法关闭');
   if (options.videoMode === 'trial') return false;
   if (task.ai?.kind === 'video' && task.ai.stage === 'processing' && Date.now() - (task.ai.at || task.waitingSince || task.jobStartedAt || 0) > 45000) {
-    return deferVideoChapter(tabId, task, ctx, job, '视频弹题 AI 流程中断或超时');
+    return deferVideoChapter(tabId, task, ctx, job, '视频弹题自动答题流程中断或超时');
   }
   if (task.ai?.kind === 'video' && task.ai.stage === 'error') {
-    return deferVideoChapter(tabId, task, ctx, job, '视频弹题 AI 未能取得或填写有效答案');
+    return deferVideoChapter(tabId, task, ctx, job, '视频弹题自动答题未能取得或填写有效答案');
   }
-  if (frame.videoQuestionFeedback === 'incorrect') return deferVideoChapter(tabId, task, ctx, job, '视频弹题 AI 答案未通过平台校验');
+  if (frame.videoQuestionFeedback === 'incorrect') return deferVideoChapter(tabId, task, ctx, job, '视频弹题答案未通过平台校验');
   if (task.ai?.stage === 'submitted' && Date.now() - task.ai.at > 30000 && ['open', 'submitting'].includes(frame.videoQuestionFeedback)) {
     return deferVideoChapter(tabId, task, ctx, job, '视频弹题提交后未返回明确结果');
   }

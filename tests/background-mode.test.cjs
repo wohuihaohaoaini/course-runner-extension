@@ -282,3 +282,25 @@ test('a tab the user muted themselves is never unmuted, and background off leave
   await f.settle();
   assert.equal(ofType(f.log, 'update').filter(e => 'muted' in e[2]).length, 0);
 });
+
+test('switching to another tab and back during a normal capture discards the image', async () => {
+  const f = fixture();
+  const activated = new Set();
+  f.context.chrome.tabs.onActivated = { addListener: fn => activated.add(fn), removeListener: fn => activated.delete(fn) };
+  f.context.chrome.tabs.captureVisibleTab = async () => {
+    // 先切到同窗口的另一网页再切回：截图前后课程页都是选中状态，但截到的是另一页。
+    for (const fn of [...activated]) fn({ tabId: 9, windowId: 1 });
+    for (const fn of [...activated]) fn({ tabId: 1, windowId: 1 });
+    f.log.push(['captureVisibleTab']);
+    return 'data:image/png;base64,OTHER';
+  };
+  const result = await f.send({ type: 'CAPTURE_TAB', guard });
+  assert.match(result.error, /切换了标签页/);
+  assert.equal(activated.size, 0, 'listeners are removed after the capture');
+  // 其他窗口的切换不影响课程窗口的截图。
+  f.context.chrome.tabs.captureVisibleTab = async () => {
+    for (const fn of [...activated]) fn({ tabId: 5, windowId: 2 });
+    return 'data:image/png;base64,VISIBLE';
+  };
+  assert.equal(await f.send({ type: 'CAPTURE_TAB', guard }), 'data:image/png;base64,VISIBLE');
+});

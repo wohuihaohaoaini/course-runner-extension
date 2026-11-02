@@ -1,15 +1,17 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
+const fs=require('node:fs');
+const path=require('node:path');
 const loadContent=require('./load-content.cjs');
-function fixture(kind='quiz', extra={}, onAnswer) {
+function fixture(kind='quiz', extra={}, onAnswer, onLookup) {
   const main={frameId:0,active:true,kind:'other',chapterId:'7',tabs:[],catalog:[{id:'7',name:'本节',unfinished:1,active:true}]};
   const frame={frameId:3,active:true,kind,jobId:'j1',aiDocument:'doc1',questionCount:1,quizPageVisible:kind==='quiz',mediaPage:kind==='video',
     videoQuestionSurface:kind==='video',videoQuestionFeedback:kind==='video'?'open':null,videoQuestionIdentity:kind==='video'?'event1':null, video:{paused:true,ready:true,time:20,duration:100}};
   const cards={frameId:2,active:true,kind:'other',jobs:[{id:'j1',name:'任务',type:kind==='quiz'?'quiz':'video',isJob:true,finished:false}]};
   const stored={aiEnabled:true,aiQuizEnabled:true,aiVideoEnabled:true,aiRevision:'v1',apiKey:'test',
     'task:1':{state:'running',phase:'page',runId:'r1',activeChapterId:'7',currentJobId:'j1',jobStartedAt:Date.now(),tabOpenedAt:Date.now(),skippedJobs:[]},...extra};
-  const targets=[];const commands=[];let answers=0;const filled=[];let submits=0;
+  const targets=[];const commands=[];let answers=0,lookups=0;const requests=[];const filled=[];let submits=0;
   const questions=[{id:kind==='quiz'?'q1':'video-question',type:'single',needsImage:false,stem:'一加一？',options:[{id:'A',text:'二'},{id:'B',text:'三'}]}];
   const win={};win.top=win;
   const context=vm.createContext({window:win,top:win,URL,URLSearchParams,setTimeout,clearTimeout,
@@ -18,7 +20,8 @@ function fixture(kind='quiz', extra={}, onAnswer) {
     chrome:{storage:{local:{get:async keys=>Object.fromEntries((typeof keys==='string'?[keys]:keys||Object.keys(stored)).map(k=>[k,stored[k]])),set:async p=>Object.assign(stored,JSON.parse(JSON.stringify(p)))}},
       runtime:{onMessage:{addListener(){}},sendMessage:async m=>{
         if(m.type==='INSPECT_FRAMES')return [main,cards,frame];
-        if(m.type==='ANSWER'){answers++;await onAnswer?.({stored,main,frame});return [{id:questions[0].id,choices:['A']}];}
+        if(m.type==='ANSWER'){answers++;requests.push(m.questions);await onAnswer?.({stored,main,frame});return m.questions.map(q=>({id:q.id,choices:['A']}));}
+        if(m.type==='BANK_LOOKUP'){lookups++;await onLookup?.({stored,main,frame});return vm.runInContext(`QuestionBank.lookup(${JSON.stringify(m.questions)}, QuestionBank.parse(${JSON.stringify(stored.questionBank || [])}))`,context);}
         if(m.type==='AI_CLAIM_SUBMISSION'){const locks=stored.aiSubmissionLocks ||= {};const old=locks[m.key];if(m.confirmation?(!old||old.confirmed):old)return {claimed:false,record:old};locks[m.key]={at:Date.now(),confirmed:!!m.confirmation};return {claimed:true};}
         if(m.type==='COMMAND_FRAME'){
           commands.push(m.command);targets.push([m.command,m.frameId]);
@@ -31,7 +34,8 @@ function fixture(kind='quiz', extra={}, onAnswer) {
       }}}
   });
   loadContent(context);
-  return {stored,main,frame,cards,commands,targets,filled,submits:()=>submits,answers:()=>answers,task:()=>stored['task:1'],
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../background-bank.js'),'utf8'),context);
+  return {stored,main,frame,cards,commands,targets,filled,questions,requests,lookups:()=>lookups,submits:()=>submits,answers:()=>answers,task:()=>stored['task:1'],
     retry:()=>vm.runInContext("startLoop=()=>{};retryAI(1,'task:1',JSON.parse(JSON.stringify(chromeState)))",Object.assign(context,{chromeState:stored['task:1']})),
     tick:()=>vm.runInContext(`tick(1,${JSON.stringify(stored['task:1'])})`,context)};
 }
@@ -237,4 +241,59 @@ test('chapter quiz AI failure is retried automatically',async()=>{
  assert.equal(f.task().ai.stage,'error');assert.ok(f.task().ai.retryAt);assert.equal(f.task().waitReason,'quiz');
  await f.tick();assert.equal(f.answers(),0);
  delete f.frame.readError;f.task().ai.retryAt=Date.now()-1;await f.tick();assert.equal(f.answers(),1);assert.equal(f.filled.length,1);
+});
+
+const bankEntry={type:'single',stem:'一加一？',options:['三','二'],choices:['B']};
+const bankSettings={questionBankEnabled:true,aiEnabled:false,apiKey:'',questionBank:[bankEntry]};
+test('bank-only chapter quiz fills and verifies with no AI or key and defaults to manual submission',async()=>{
+ const f=fixture('quiz',bankSettings);await f.tick();
+ assert.equal(f.answers(),0);assert.equal(f.lookups(),1);assert.equal(f.filled.length,1);
+ assert.equal(f.filled[0].answers[0].choices[0],'A');assert.equal(f.filled[0].guard.source,'bank');assert.equal(f.submits(),0);
+ assert.equal(f.task().ai.stage,'manual');assert.equal(f.task().ai.bankHits,1);assert.match(f.task().status,/题库命中 1\/1/);
+ await f.tick();assert.equal(f.filled.length,1);
+});
+test('bank-only video submits once and continues while both AI switches are disabled',async()=>{
+ const f=fixture('video',{...bankSettings,aiVideoEnabled:false});await f.tick();
+ assert.equal(f.answers(),0);assert.equal(f.submits(),1);assert.equal(f.task().ai.source,'bank');
+ await f.tick();assert.equal(f.submits(),1);f.frame.videoQuestionFeedback='continue';await f.tick();assert.ok(f.commands.includes('CONTINUE_VIDEO_QUESTION'));
+});
+test('bank-only auto-submit includes final top-frame confirmation once',async()=>{
+ const f=fixture('quiz',{...bankSettings,aiQuizEnabled:false,autoSubmit:true});f.main.aiDocument='top-doc';
+ await f.tick();assert.equal(f.submits(),1);f.main.topSubmitConfirm=true;await f.tick();await f.tick();
+ assert.equal(f.commands.filter(c=>c==='CONFIRM_TOP_SUBMIT').length,1);assert.equal(f.answers(),0);
+});
+test('bank misses wait without filling or AI, then importing the missing entry resumes the same question',async()=>{
+ for(const kind of ['quiz','video']){
+ const f=fixture(kind,{...bankSettings,questionBank:[{...bankEntry,stem:'另一道题'}]});await f.tick();
+ assert.equal(f.task().ai.stage,'bank-miss');assert.equal(f.filled.length,0);assert.equal(f.submits(),0);assert.equal(f.answers(),0);
+ await f.tick();assert.equal(f.lookups(),1);assert.match(f.task().status,/题库命中 0\/1/);
+ f.stored.questionBank=[bankEntry];f.stored.aiRevision='imported';await f.tick();
+ assert.equal(f.filled.length,1);assert.equal(f.task().ai.bankHits,1);assert.equal(f.answers(),0);
+ }
+});
+test('partial bank matches never submit a partly filled quiz; optional AI sees only missing questions',async()=>{
+ for(const aiEnabled of [false,true]){
+ const f=fixture('quiz',{...bankSettings,aiEnabled,autoSubmit:true});
+ f.questions.push({...f.questions[0],id:'q2',stem:'二加二？'});await f.tick();
+ if(!aiEnabled){assert.equal(f.filled.length,0);assert.equal(f.submits(),0);assert.equal(f.task().ai.bankHits,1)}
+ else {assert.equal(f.answers(),1);assert.deepEqual(f.requests[0].map(q=>q.id),['q2']);assert.equal(f.filled[0].answers.length,2);assert.equal(f.submits(),1)}
+ }
+});
+test('bank answers are discarded if the question, bank setting, revision or running state changes during lookup',async()=>{
+ for(const change of [({frame})=>{frame.videoQuestionFingerprint='changed'},({stored})=>{stored.questionBankEnabled=false},({stored})=>{stored.aiRevision='edited'},({stored})=>{stored['task:1'].state='paused'}]){
+ const f=fixture('video',bankSettings,undefined,change);await f.tick();assert.equal(f.filled.length,0);assert.equal(f.submits(),0);assert.equal(f.answers(),0);
+ }
+});
+test('bank-only image questions wait without requesting screenshots or AI',async()=>{
+ const f=fixture('quiz',bankSettings);f.questions[0].needsImage=true;await f.tick();
+ assert.equal(f.task().ai.stage,'bank-miss');assert.match(f.task().status,/图片或加密/);assert.equal(f.commands.includes('CAPTURE_QUESTION'),false);assert.equal(f.answers(),0);
+});
+test('manual video mode takes precedence over an enabled question bank',async()=>{
+ const f=fixture('video',{...bankSettings,videoAnswerMode:'manual'});await f.tick();assert.equal(f.lookups(),0);assert.equal(f.submits(),0);assert.match(f.task().status,/手动/);
+});
+test('after a bank miss the user answers the video question by hand and the runner clicks continue',async()=>{
+ const f=fixture('video',{...bankSettings,questionBank:[{...bankEntry,stem:'另一道题'}]});await f.tick();
+ assert.equal(f.task().ai.stage,'bank-miss');
+ f.frame.videoQuestionFeedback='continue';await f.tick();
+ assert.ok(f.commands.includes('CONTINUE_VIDEO_QUESTION'));assert.equal(f.submits(),0);assert.equal(f.answers(),0);
 });

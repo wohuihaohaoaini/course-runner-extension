@@ -54,13 +54,19 @@ function inspectPayload(sender) {
 
 async function pauseTask(key, previous) {
   await chrome.runtime.sendMessage({ type: "CANCEL_AI" }).catch(() => {});
-  await chrome.storage.local.set({ [key]: { ...previous, state: "paused", status: "已由用户暂停", updatedAt: Date.now() } });
-  recordDiagnostic("pause", { phase: previous?.phase, state: "paused" });
+  // 与运行器写入同一队列，并以最新状态为准；pausedBy 让暂停前发起的进度写入失效。
+  const paused = await queueTaskWrite(async () => {
+    const latest = (await chrome.storage.local.get(key))[key] || previous;
+    const next = { ...latest, state: "paused", pausedBy: "user", status: "已由用户暂停", updatedAt: Date.now() };
+    await chrome.storage.local.set({ [key]: next });
+    return next;
+  });
+  recordDiagnostic("pause", { phase: paused?.phase, state: "paused" });
   return { ok: true };
 }
 
 async function retryAI(tabId, key, previous) {
-  if (previous?.state !== 'running' || previous?.ai?.stage !== 'error') throw new Error('当前没有可重新读取的 AI 题目');
+  if (previous?.state !== 'running' || !['error', 'bank-miss'].includes(previous?.ai?.stage)) throw new Error('当前没有可重新读取的题目');
   await chrome.runtime.sendMessage({ type: 'CANCEL_AI' });
   const latest = (await chrome.storage.local.get(key))[key];
   if (latest?.runId !== previous.runId || latest?.state !== 'running') throw new Error('运行状态已变化，请重新开始');
@@ -83,13 +89,13 @@ async function startFromDirectory(tabId, key, target) {
     recordDiagnostic("state", { phase: "directory", state: locked || undecided ? "paused" : "completed" });
     recordDiagnostic("structure", { frame: 0, urlKind: "directory", note:
       `目录行数 ${rows}，可读取完成标记 ${scan.evaluated}，识别为未完成 ${scan.candidates}，锁定 ${locked ? "有" : "无"}，未识别 ${unknown ? "有" : "无"}` });
-    await chrome.storage.local.set({ [key]: {
+    await queueTaskWrite(() => chrome.storage.local.set({ [key]: {
       state: locked || undecided ? "paused" : "completed", phase: "directory", directoryUrl,
       startedAt: Date.now(), updatedAt: Date.now(),
       status: unknown ? "课程目录有未识别的小节状态，请导出日志核对" :
         unreadable ? `课程目录有 ${rows - scan.evaluated} 个小节读不到完成标记，无法判断是否已完成；请导出日志核对` :
         locked ? "当前没有可做的小节，但目录仍有锁定内容" : "当前课程目录的可做小节已全部完成"
-    } });
+    } }));
     return { ok: true };
   }
   const task = {
@@ -97,7 +103,7 @@ async function startFromDirectory(tabId, key, target) {
     targetChapterId: target.chapter, startedAt: Date.now(), updatedAt: Date.now(), log: [],
     status: "已找到首个未完成小节，准备进入学习页"
   };
-  await chrome.storage.local.set({ [key]: task });
+  await queueTaskWrite(() => chrome.storage.local.set({ [key]: task }));
   recordDiagnostic("start", { phase: task.phase, state: task.state });
   startLoop(tabId);
   return { ok: true };
@@ -110,7 +116,7 @@ async function startInChapter(tabId, key, chapter) {
     directoryUrl: courseDirectoryUrl(), studyView: studyViewContext(), deferredChapters: [], processedChapters: [], chapterEntries: { [chapter]: 1 },
     status: "已开始，正在读取本节任务点", log: [{ at: Date.now(), text: "已开始，正在读取本节任务点" }]
   };
-  await chrome.storage.local.set({ [key]: task });
+  await queueTaskWrite(() => chrome.storage.local.set({ [key]: task }));
   recordDiagnostic("start", { phase: task.phase, state: task.state });
   startLoop(tabId);
   return { ok: true };

@@ -181,7 +181,9 @@ $("clearLogs").addEventListener("click", async () => {
 });
 
 async function renderAISwitches() {
-  const values = await chrome.storage.local.get(["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit", "videoAnswerMode"]);
+  const values = await chrome.storage.local.get(["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit", "videoAnswerMode", "questionBankEnabled", "questionBankCount"]);
+  $("questionBankEnabled").checked = values.questionBankEnabled === true;
+  $("bankStatus").textContent = `已录入 ${values.questionBankCount || 0} 题 · ${values.questionBankEnabled === true ? '题库已启用' : '题库未启用'}`;
   $("videoAnswerMode").value = ["trial", "manual"].includes(values.videoAnswerMode) ? values.videoAnswerMode : "ai";
   $("aiEnabled").checked = values.aiEnabled === true;
   $("aiVideoEnabled").checked = values.aiVideoEnabled !== false;
@@ -189,7 +191,7 @@ async function renderAISwitches() {
   $("autoSubmit").checked = values.autoSubmit === true;
   $("aiHint").textContent = values.aiEnabled === true
     ? `AI 已开启。${values.aiQuizEnabled === false ? "“章节测验”分项未勾选，遇到测验仍按“AI 关闭时”的规则处理。" : ""}运行中关闭会取消尚未完成的 AI 操作；已提交的内容无法撤回。`
-    : "AI 已关闭。视频顺序试答仍可独立运行；请在“运行设置”选择。章节测验默认仅填写。";
+    : values.questionBankEnabled === true ? "AI 已关闭。本地题库可独立作答；未命中时不会调用 AI。章节测验默认仅填写。" : "AI 已关闭。视频顺序试答仍可独立运行；请在“运行设置”选择。章节测验默认仅填写。";
 }
 async function renderAISettings() {
   const values = await chrome.storage.local.get(["apiKey", "model", "referenceText", "customPrompt"]);
@@ -205,10 +207,13 @@ async function saveAISettings(patch) {
   if (!result?.ok) throw new Error("AI 设置未保存，请重新加载扩展");
   await renderAISwitches();
 }
-for (const key of ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit"]) {
+for (const key of ["aiEnabled", "aiVideoEnabled", "aiQuizEnabled", "autoSubmit", "questionBankEnabled"]) {
   $(key).addEventListener("change", () => saveAISettings({ [key]: $(key).checked }).catch(showError));
 }
 $("model").addEventListener("change", () => saveAISettings({ model: $("model").value }).catch(showError));
+$("openQuestionBank").addEventListener("click", () => chrome.runtime.sendMessage({ type: 'OPEN_QUESTION_BANK' }).then(result => {
+  if (result?.error) throw new Error(result.error);
+}).catch(showError));
 $("saveKey").addEventListener("click", async () => {
   try {
     const apiKey = $("apiKey").value.trim();

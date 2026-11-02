@@ -16,6 +16,7 @@ const INCLUDE = [
   'popup.html',
   'popup.css',
   'popup.js',
+  /^question-bank\.(html|css|js)$/,
   /^content\/[\w-]+\.js$/,
   /^icons\/icon\d+\.png$/,
   /^docs\/images\/[\w-]+\.(png|svg)$/,

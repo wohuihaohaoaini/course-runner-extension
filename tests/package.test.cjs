@@ -40,7 +40,7 @@ test('安装包只含运行文件和说明，中文文件名带 UTF-8 标记', (
 
     const entries = readZip(zipPath);
     const names = entries.map(entry => entry.name);
-    for (const required of ['manifest.json', 'background.js', 'background-ai.js', 'background-playback.js', 'popup.html',
+    for (const required of ['manifest.json', 'background.js', 'background-ai.js', 'background-bank.js', 'background-playback.js', 'popup.html', 'question-bank.html', 'question-bank.js', 'question-bank.css',
       ...manifest.content_scripts[0].js, ...Object.values(manifest.icons), 'README.md', 'CHANGELOG.md', '安装与使用说明.txt']) {
       assert.ok(names.includes(required), `缺少 ${required}`);
     }
